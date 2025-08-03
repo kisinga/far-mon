@@ -1,7 +1,7 @@
-# core/ — Central Server Code (Placeholder)
+# Core
 
-- Code for home/cloud aggregation, if/when the farm expands to multi-site or requires remote analytics.
-- Currently, all critical backend logic lives on the Pi in `edge/pi/thingsboard/`.
+This directory is a placeholder for central server code, intended for future use when the farm expands to multiple sites or requires remote analytics.
 
-**To enable sync/aggregation with a home server:**  
-- Add ETL scripts, Rule Engine configs, or MQTT/HTTP bridges here.
+Currently, all critical backend logic resides on the Raspberry Pi in `edge/pi/`.
+
+For more information, see the [main documentation](https://github.com/ryanjyoder/farm/blob/main/docs/README.md).

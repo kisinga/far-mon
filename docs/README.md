@@ -1,17 +1,13 @@
-# docs/ — Farm Infra Documentation
+# Farm Infra Documentation
 
-This directory contains all non-code documentation for the system:
-- Hardware diagrams and photos
-- Protocol descriptions (sensor, config, acknowledgements)
-- Example configuration files
-- Development logs and setup notes
+This directory contains all documentation for the farm monitoring system.
 
-## Key Files
+## Table of Contents
 
-- `overview.md`: System-level diagram, data flow, and site notes
-- `protocols.md`: Message format, addressing, and versioning
-- `hardware.md`: Pinouts, wiring diagrams, sensor datasheets
-- `config-samples/`: Example config files for remote firmware, relay, and Pi
-
-**How to extend:**  
-- Add new hardware documentation or protocol updates as new sensors and interfaces are added.
+1.  [**System Overview**](01_overview.md)
+2.  [**Hardware**](02_hardware.md)
+3.  [**Firmware**](03_firmware.md)
+4.  [**Communication Protocols**](04_protocols.md)
+5.  [**Raspberry Pi Setup**](05_raspberry_pi.md)
+6.  [**Deployment Guide**](06_deployment.md)
+7.  [**Maintenance and Extensibility**](07_maintenance.md)

@@ -1,22 +1,19 @@
-# edge/pi/ — Raspberry Pi Edge Stack
+# Raspberry Pi
+
+This directory contains the code and configuration for the Raspberry Pi edge stack.
 
 ## Roles
 
-- Runs ThingsBoard (local dashboard, data store, rule engine)
-- Runs `relay-bridge/` to move data between relay node (serial or LoRa) and ThingsBoard (via MQTT/HTTP)
-- Provides VPN entry (Tailscale) for secure, remote dashboard/SSH access
-- Manages all field logging, config distribution, and service health
+*   Runs ThingsBoard for the local dashboard, data storage, and rule engine.
+*   Runs the `relay-bridge` to move data between the relay node and ThingsBoard.
+*   Provides a VPN entry point (Tailscale) for secure remote access.
 
 ## Contents
 
-| Folder          | Description                                         |
-|-----------------|-----------------------------------------------------|
-| `thingsboard/`  | Setup, configs, and Docker Compose for ThingsBoard  |
-| `relay-bridge/` | All code for serial/LoRa<->MQTT bridge, config push |
-| `utils/`        | Scripts for logging, backup, or self-tests          |
+| Folder          | Description                                  |
+| :-------------- | :------------------------------------------- |
+| `thingsboard/`  | Setup and configuration for ThingsBoard.     |
+| `relay-bridge/` | Code for the serial/LoRa-to-MQTT bridge.     |
+| `utils/`        | Scripts for logging, backup, and self-tests. |
 
-**Extending:**  
-- Swap in LoRa Hat by replacing comms class in `relay-bridge/`.
-- Add additional dashboard or monitoring tools as needed.
-
-See `../../docs/overview.md` for network and physical diagrams.
+For detailed setup and configuration instructions, see the [Raspberry Pi Setup documentation](https://github.com/ryanjyoder/farm/blob/main/docs/05_raspberry_pi.md).

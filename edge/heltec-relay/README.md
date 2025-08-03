@@ -1,25 +1,9 @@
-# edge/heltec-relay/ — Relay Node Firmware
+# Heltec Relay Node
+
+This directory contains the firmware for the Heltec relay node.
 
 ## Purpose
 
-- Receives sensor data from remote node(s) via LoRa.
-- Forwards data to Pi via serial (or other, via interface).
-- Receives config commands from Pi (serial), pushes to remote(s) via LoRa.
-- Handles ACK from remote and reports status upstream.
+The relay node receives sensor data from remote nodes via LoRa and forwards it to the Raspberry Pi via serial. It also relays configuration commands from the Pi to the remote nodes.
 
-## Extensibility
-
-- Serial interface is swappable: can support SPI/I2C or direct LoRa in future.
-- Updatable over USB.
-
-## Protocol
-
-- Message format: see `../../shared/protocol.md`.
-
-## Setup
-
-- Flash via USB.
-- Configure device IDs and channels in `config.h` or via initial serial setup.
-
-**Logs and troubleshooting tips:**  
-See `../docs/troubleshooting.md` (if present).
+For detailed information, see the [Firmware documentation](https://github.com/ryanjyoder/farm/blob/main/docs/03_firmware.md).

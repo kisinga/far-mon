@@ -1,14 +1,9 @@
-# shared/ — Protocols and Utilities
+# Shared
 
-All serialization, deserialization, and protocol logic used across edge and server components.
+This directory contains shared code and definitions used across the entire system, including:
 
-- Packing/unpacking code for sensor and config packets (Python, C++, etc.)
-- Message versioning and address map.
-- Common utilities and test vectors for both firmware and bridge code.
+*   Serialization and deserialization logic.
+*   Protocol definitions for sensor and configuration packets.
+*   Common utilities and test vectors.
 
-**Extending:**  
-- Update or add protocol definitions here as the system evolves.
-- All devices and bridges must conform to definitions here.
-
-**See:**  
-- `protocol.md` for message structure and version history.
+For more details, see the [Communication Protocols documentation](https://github.com/ryanjyoder/farm/blob/main/docs/04_protocols.md).
