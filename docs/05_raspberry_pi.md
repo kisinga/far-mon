@@ -1,36 +1,48 @@
 # 5. Raspberry Pi Setup
 
-The Raspberry Pi serves as the edge server for the farm monitoring system. It runs the ThingsBoard platform, the `relay-bridge` service, and provides secure remote access.
+The Raspberry Pi serves as the edge server for the farm monitoring system. It runs a unified Docker container for all custom services, which can be configured to communicate with any ThingsBoard instance. This entire setup is managed by a self-hosted instance of Coolify.
 
-## 5.1. Roles and Responsibilities
+## 5.1. Architecture
 
-*   **ThingsBoard**: Provides the local telemetry dashboard, data storage, and rule engine.
-*   **Relay Bridge**: A service that transfers data between the relay node (serial) and ThingsBoard (MQTT/HTTP).
-*   **VPN Entry Point**: Uses Tailscale for secure, remote access to the dashboard and SSH.
-*   **Logging and Health**: Manages field logging, configuration distribution, and service health monitoring.
+All custom code for the Raspberry Pi is managed in a single Go project and deployed as a single Docker container. This simplifies deployment and management. The main service is the `relay-bridge`, which is designed to be modular and extensible.
 
-## 5.2. ThingsBoard Deployment
+The container communicates with a ThingsBoard API to send telemetry data and receive configuration updates. The ThingsBoard instance can be local or remote, and is configured via a configuration file.
 
-ThingsBoard runs as a Docker container on the Pi.
+### 5.1.1. Coolify Management
 
-### Getting Started
+The Docker container is deployed and managed using a self-hosted Coolify instance. This provides a simple, git-based workflow for deploying updates to the edge device.
 
-1.  Install Docker and Docker Compose on the Raspberry Pi.
-2.  Copy the provided `docker-compose.yml` file to the `edge/pi/thingsboard/` directory.
-3.  Start ThingsBoard in detached mode:
-    ```sh
-    docker-compose up -d
-    ```
+## 5.2. Project Structure
 
-### Security
+The code for the Raspberry Pi services is located in the `edge/pi/` directory.
 
-The ThingsBoard instance is secured by Tailscale and is not accessible from the public internet.
+| File/Folder               | Description                                      |
+| :------------------------ | :----------------------------------------------- |
+| `src/`                    | Go source code for the services.                 |
+| `src/cmd/relay-bridge/`   | Main application for the `relay-bridge`.         |
+| `src/pkg/`                | Shared Go packages (`config`, `thingsboard`, `serial`). |
+| `config.yaml`             | Configuration file for the services.             |
+| `Dockerfile`              | Dockerfile for building the services container.  |
+| `docker-compose.yml`      | Docker Compose file for local development.       |
 
-## 5.3. Relay Bridge
 
-The `relay-bridge` is a custom service that:
+## 5.3. Configuration
 
-*   Reads sensor data from the relay node via the serial port.
-*   Parses the data and forwards it to the ThingsBoard telemetry API.
-*   Listens for configuration updates from ThingsBoard and sends them to the relay node.
-*   Is located in the `edge/pi/relay-bridge/` directory.
+The `relay-bridge` service is configured using the `config.yaml` file. This file allows you to specify the details of the ThingsBoard instance to connect to.
+
+```yaml
+thingsboard:
+  host: "your-thingsboard-host"
+  port: 8080
+  token: "YOUR_THINGSBOARD_TOKEN"
+```
+
+The configuration can also be provided via environment variables. For example, `THINGSBOARD_HOST` will override the `host` value in the `thingsboard` section.
+
+## 5.4. Deployment
+
+To deploy the services, push your changes to the `main` branch. Coolify will automatically detect the changes, build the Docker image, and deploy it to the Raspberry Pi.
+
+## 5.5. ThingsBoard
+
+The `relay-bridge` no longer depends on a local ThingsBoard instance. It can be configured to work with any ThingsBoard instance, whether it's running on the same device, on your local network, or in the cloud.
