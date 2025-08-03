@@ -4,4 +4,4 @@ This directory is a placeholder for central server code, intended for future use
 
 Currently, all critical backend logic resides on the Raspberry Pi in `edge/pi/`.
 
-For more information, see the [main documentation](https://github.com/ryanjyoder/farm/blob/main/docs/README.md).
+For more information, see the [main documentation](https://github.com/kisinga/farm/blob/main/docs/README.md).
