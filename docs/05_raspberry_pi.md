@@ -21,23 +21,29 @@ The code for the Raspberry Pi services is located in the `edge/pi/` directory.
 | `src/`                    | Go source code for the services.                 |
 | `src/cmd/relay-bridge/`   | Main application for the `relay-bridge`.         |
 | `src/pkg/`                | Shared Go packages (`config`, `thingsboard`, `serial`). |
-| `config.yaml`             | Configuration file for the services.             |
+| `config.yaml`             | Default configuration file for the services.     |
 | `Dockerfile`              | Dockerfile for building the services container.  |
 | `docker-compose.yml`      | Docker Compose file for local development.       |
 
 
 ## 5.3. Configuration
 
-The `relay-bridge` service is configured using the `config.yaml` file. This file allows you to specify the details of the ThingsBoard instance to connect to.
+The `relay-bridge` service has a default configuration that is compiled into the application. This default configuration can be overridden by a `config.yaml` file or by environment variables.
 
+The configuration loading order is as follows:
+1.  Compiled-in default values.
+2.  Values from a `config.yaml` file (if present). This file is looked for in `/app/config.yaml` inside the container.
+3.  Environment variables (e.g., `THINGSBOARD_HOST`).
+
+To customize the configuration, you can mount a `config.yaml` file into the container at `/app/config.yaml`.
+
+Here is an example `config.yaml`:
 ```yaml
 thingsboard:
   host: "your-thingsboard-host"
   port: 8080
   token: "YOUR_THINGSBOARD_TOKEN"
 ```
-
-The configuration can also be provided via environment variables. For example, `THINGSBOARD_HOST` will override the `host` value in the `thingsboard` section.
 
 ## 5.4. Deployment
 
