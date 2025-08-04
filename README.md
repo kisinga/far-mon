@@ -1,3 +1,5 @@
+![Farm ERP Logo](docs/images/farm_erp.png)
+
 # Farm Infrastructure & High Impact Metrics Integration
 This repository contains the source code, configuration, and documentation for my autonomous farm monitoring and control system. The system is designed as a modular, resilient, and extensible foundation. Over time, it has evolved into a data-driven decision engine, supporting high-impact measurements and paving the way for deep integration with record-keeping (ERPNext and beyond).
 
