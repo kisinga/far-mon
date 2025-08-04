@@ -1,6 +1,6 @@
 # Farm Infrastructure
 
-This repository contains the source code, configuration, and documentation for an autonomous farm monitoring and control system.
+This repository contains the source code, configuration, and documentation for an autonomous farm monitoring and control system. It doesn't touch on anything to do with record-keeping for any specific aspect of farming
 
 ## High-Level Structure
 
