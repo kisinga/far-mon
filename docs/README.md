@@ -60,7 +60,7 @@ graph LR
 #### B. Data & Communication Layer
 
 | Path | Protocol | Details |
-| :--- | :--- |
+| :--- | :--- | :--- |
 | Remote Heltec → Relay Heltec | LoRa (Semtech) | Uplink sensor data, 433/868/915 MHz as per region. |
 | Relay Heltec → Pi | Serial/USB UART | Binary/text packets; bidirectional for configuration. |
 | Pi → ThingsBoard (internal) | MQTT/HTTP | Standard ThingsBoard device telemetry API. |

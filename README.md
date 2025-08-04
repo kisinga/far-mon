@@ -20,7 +20,26 @@ A modular, resilient farm-monitoring platform that **consolidates resources** an
 
 ## 🏗️ High-Level Architecture
 
-[ Remote ] ── LoRa ── [ Relay ] ── Serial ── [ Pi Edge ] ── MQTT/REST ── [ ERPNext / Dashboard ]
+```mermaid
+graph TD;
+    subgraph "Remote Site"
+        Remote_Node[Remote Node <br/> ESP32/Heltec]
+    end
+    subgraph "Local Site"
+        Relay_Node[Relay Node <br/> LoRa <=> Serial]
+        Pi_Edge[Pi Edge Node <br/> Aggregation, DB, Rules]
+        ERPNext[ERPNext / Dashboard]
+    end
+
+    Remote_Node -- LoRa --> Relay_Node;
+    Relay_Node -- Serial --> Pi_Edge;
+    Pi_Edge -- MQTT/REST --> ERPNext;
+
+    style Remote_Node fill:#f9f,stroke:#333,stroke-width:2px
+    style Relay_Node fill:#ccf,stroke:#333,stroke-width:2px
+    style Pi_Edge fill:#cfc,stroke:#333,stroke-width:2px
+    style ERPNext fill:#fcf,stroke:#333,stroke-width:2px
+```
 
 - **Remote Nodes**  
   – ESP32/Heltec devices  

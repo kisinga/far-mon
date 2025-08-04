@@ -105,10 +105,13 @@ void drawRssiBars(int rssi) {
 
 void showBootScreen() {
   display.clear();
-  display.drawXbm(0, 8, farm_logo_width, farm_logo_height, farm_logo_bits);
+  display.drawXbm(0, 0, logo_width, logo_height, logo_bits);
   display.setFont(ArialMT_Plain_16);
   display.setTextAlignment(TEXT_ALIGN_LEFT);
-  display.drawString(55, 20, "FARM\nERP");
+  display.drawString(68, 12, "far-mon");
+  display.setFont(ArialMT_Plain_10);
+  display.setTextAlignment(TEXT_ALIGN_LEFT);
+  display.drawString(68, 32, "Monitor farm\nfrom far.");
   display.display();
   delay(2500);
 }
