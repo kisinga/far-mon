@@ -1,0 +1,23 @@
+# Arduino build artifacts
+*.o
+*.a
+*.d
+*.elf
+*.bin
+*.hex
+*.build
+build/
+.build/
+.vs/
+.vscode/
+firmware.*
+*~
+*.tmp
+*.bak
+*.log
+Debug/
+Release/
+xcuserdata/
+*.xcodeproj/
+*.xcworkspace/
+.DS_Store
