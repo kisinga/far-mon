@@ -21,7 +21,7 @@ graph LR
 
   RemoteSensor1 -- LoRa --> RelayNode
   RemoteSensor2 -- LoRa --> RelayNode
-  RelayNode -- Serial/USB --> Pi
+  RelayNode <-- Serial/USB --> Pi
   Pi -- Ethernet/WiFi --> Router
   Router -- Tailscale VPN --> CoreServer
   Pi -- Tailscale VPN --> CoreServer
