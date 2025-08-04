@@ -1,91 +1,88 @@
-![Farm ERP Logo](docs/images/farm_erp.png)
+![far-mon Logo](docs/images/far-mon.png)
 
-# Farm Infrastructure & High Impact Metrics Integration
-This repository contains the source code, configuration, and documentation for my autonomous farm monitoring and control system. The system is designed as a modular, resilient, and extensible foundation. Over time, it has evolved into a data-driven decision engine, supporting high-impact measurements and paving the way for deep integration with record-keeping (ERPNext and beyond).
+# far-mon  
+**Monitor your farm. From far. Farm on!**
 
-## ✨ Purpose Shift: From Infrastructure to Intelligence
-I initially built this system for resilient, modular, and low-maintenance operation. My ongoing goal is to convert raw sensor and operational data into actionable interventions—decisions that directly influence yield, resource efficiency, and water conservation. This isn't just automation; it’s farm-level intelligence under constraint, built for expansion.
+A modular, resilient farm-monitoring platform that **consolidates resources** and **plugs into** ERPNext (or any farm ERP) for unified record-keeping and analytics.
 
-## High-Level Structure
-- **Modular Design**: Each device and logical function is isolated and swappable.
-- **Resilient**: Designed for low-maintenance, high-resilience edge deployment.
-- **Extensible**: Future-proof, built to integrate additional sensors, analytics, and eventually, ERP-linked record-keeping.
+---
 
-### Directory Overview
-| Folder | Purpose |
-| :--- | :--- |
-| `docs/` | Contains all documentation for the system. |
-| `edge/` | Code for on-site devices (remote, relay, Pi). |
-| `core/` | Cloud/home-side code (future/optional). |
-| `shared/` | Protocols, config schemas, and serialization libs. |
+## 🎯 Why far-mon?
 
-## 🛠️ Current Capabilities (Deployed Stack, WIP)
-| Component | Role | Sensors/Methods |
-| :--- | :--- | :--- |
-| Remote Heltec Node | Sensor interface and uplink | Sunverter (solar), tank level (ultrasonic), flow meters, soil moisture (planned) |
-| Relay Node | LoRa-to-Serial bridge | Sends uplinks to Raspberry Pi and distributes downlinks |
-| Raspberry Pi Edge Node | Data aggregation and config push | Serial listener, LoRa command interface, local logging and daemon control |
-| Dynamic Config System | Remote firmware reconfig | LoRa-based JSON packet to ESP32 NVS |
-| NVS Storage | On-device persistence | Retains sensor and radio config through reboots |
+1. **Data-Driven Decisions**  
+   Turn raw sensor data into interventions that boost yield, efficiency, and water-use.  
+2. **Edge-First Resilience**  
+   Low-maintenance, offline-capable nodes keep running—even when the network flutters.  
+3. **ERP-Agnostic Integration**  
+   Focus on monitoring and control; let ERPNext handle inventory, finance, traceability.
 
-### Built-in Flexibility:
-- Extend `SensorConfig` for new sensor types
-- Adjust polling and payload priority
-- Push alerts or set flags using downstream LoRa commands
+---
 
-## 📊 High-Impact Measurements (Prioritized)
-| Category | What I Measure or Will Measure | Sensor/Method |
-| :--- | :--- | :--- |
-| Water | Tank level, borehole output, rainfall, soil moisture | HC-SR04 ultrasonic, tipping bucket, resistive probe |
-| Goats | Monthly weight, health status, births | Manual weighboard or RFID gate scale |
-| Fodder Plots | Harvest timestamp, regrowth rate, plot-level moisture | Manual logs + sensor probe |
-| Beehives | Temperature, humidity, entry/exit activity | Thermal probe, IR motion counter, mic (optional) |
-| Vegetables | Irrigation timing, harvest yield, pest sightings | Mobile form entries |
-| System Health | Pump runtime, solar yield, tank overflow/leakage | Pulse counter, shunt sensor, float valve |
-| Weather | Rainfall, temperature, humidity | Local station (or API fallback) |
+## 🏗️ High-Level Architecture
 
-## 🚀 Immediate Action Items (MVP Build Tier)
-| Component | Tool | Function |
-| :--- | :--- | :--- |
-| Tank Monitoring | HC-SR04 + remote node | Prevent tank overflows, monitor depletion rate |
-| Rain Gauge | Tipping bucket | Inform irrigation suppression logic and dry period prediction |
-| Goat Weighing | Manual weighboard | Track average daily gain and feed response |
-| Soil Moisture | 2–3 capacitive probes | Fine-tune irrigation schedules |
-| Crop Logging | KoboToolbox or web form | Record transplant/harvest/infection events |
-| Hive Status | Temp/humidity sensor | Predict swarming or colony stress before failure |
+[ Remote ] ── LoRa ── [ Relay ] ── Serial ── [ Pi Edge ] ── MQTT/REST ── [ ERPNext / Dashboard ]
 
-All data is serialized using my `SensorConfig` and piped into the Raspberry Pi. From there, timed services aggregate, alert, or trigger actions.
+- **Remote Nodes**  
+  – ESP32/Heltec devices  
+  – SensorConfig schema, NVS persistence  
+- **Relay Nodes**  
+  – LoRa ↔ Serial bridge  
+  – Downlink command dispatch  
+- **Pi Edge Node**  
+  – Aggregation, config pushes, local DB  
+  – Threshold “rule engine” daemon  
+- **Integration Layer**  
+  – MQTT or REST → ERPNext Adapter  
+  – Time-series ingestion service  
 
-## ⚖️ Near-Term Additions (Building on My Stack)
-| Add-On | Hook Point | Objective |
-| :--- | :--- | :--- |
-| Sunverter 4b Integration | Remote Node + TTL-to-RS485 | Monitor detailed solar system metrics (yield, battery status) |
-| Pump Runtime Counter | Flow meter + log daemon | Detect inefficient cycles or dry-running |
-| Zonal LoRa Nodes | One per field block | Enable per-plot decisions (moisture, temp, irrigation) |
-| Dashboard | Locally hosted web UI | Onsite awareness of water, climate, and livestock metrics |
-| Rule Engine | Pi daemon (thresholds) | Run logic (e.g., rain < X + tank > 30% → irrigate plot 2) |
+---
 
-## 📆 Future Roadmap: ERPNext Integration
-**Vision**:
-Integrate my entire sensor and event-logging system into a farm ERP (ERPNext), enabling unified record-keeping and analytics.
+## ⚙️ Capabilities (MVP)
 
-**Aspirations**:
-- Full livestock and crop log integration
-- Direct syncing of sensor data to a time-series backend
-- Offline-first mobile data entry
-- Auto-generated reports for production, consumption, and water use
-- Link economics directly to field conditions
+| Domain       | What we measure                   | Hardware / Method                |
+|-------------|-----------------------------------|----------------------------------|
+| Water       | Tank level, borehole flow, rain   | HC-SR04, tipping bucket, API     |
+| Soil        | Moisture                          | Capacitive probes                |
+| Livestock   | Goat weight, health              | Manual scale or RFID gate        |
+| Fodder      | Harvest time, regrowth rate      | Logs + moisture probe            |
+| Hives       | Temp, humidity, activity         | Thermal probe, IR motion counter |
+| System      | Uptime, solar output, leaks      | Pulse counters, shunt sensors    |
 
-**Requirements**:
-- Time-series ingestion service (Pi → ERPNext adapter or message broker)
-- Mobile forms with offline sync
-- REST/MQTT bridge for real-time dashboards or warnings
-- Device registry in ERPNext for per-sensor metadata
-- Integration hooks for goat, crop, and inventory records
+_All measurements flow through SensorConfig → Pi → ERPNext (or dashboard)._
 
-## Getting Started
-To understand the system architecture, start with the [System Overview](docs/01_overview.md).
+---
 
-For detailed documentation, see the [main documentation page](docs/README.md).
+## 🚀 MVP Action Items
 
-For deployment instructions, refer to the [Deployment Guide](docs/06_deployment.md).
+1. **Tank Monitoring** – Over-/under-flow alerts  
+2. **Rain Gauge** – Irrigation suppression logic  
+3. **Soil Moisture** – Dynamic irrigation triggers  
+4. **Goat Weighing** – Growth tracking dashboard  
+5. **Crop Events** – Mobile form logging  
+6. **Hive Health** – Pre-swarm warnings  
+
+---
+
+## 🔌 Near-Term Extensions
+
+- **Sunverter 4b** (RS-485) → Solar metrics  
+- **Pump Runtime** → Efficiency analytics  
+- **Zonal Nodes** → Per-plot decisions  
+- **Local Dashboard** → Web UI on Pi  
+- **Rule Engine** → Configurable thresholds  
+
+---
+
+## 📆 ERPNext Integration Roadmap
+
+1. **Device Registry** in ERPNext for sensor metadata  
+2. **Time-Series Bridge** (Pi → MQTT/REST → ERPNext)  
+3. **Offline Mobile Forms** (goats, crops, maintenance)  
+4. **Auto-Reports** for yield, water use, cost vs. field conditions  
+5. **ERP Hooks** for livestock, crop, inventory sync  
+
+---
+
+## 🚀 Getting Started
+
+For detailed documentation, please see the [Farm Monitoring System Documentation](docs/README.md).

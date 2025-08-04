@@ -10,4 +10,4 @@ This directory contains all code and configuration for devices and services runn
 | `heltec-remote/` | Firmware for the remote sensor node.       |
 | `heltec-relay/`  | Firmware for the LoRa-to-serial relay node.|
 
-For detailed information, see the [main documentation](https://github.com/ryanjyoder/farm/blob/main/docs/README.md).
+For detailed information, see the [main documentation](../docs/README.md).
