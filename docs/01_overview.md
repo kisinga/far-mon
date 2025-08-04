@@ -26,7 +26,6 @@ graph LR
   Router -- Tailscale VPN --> CoreServer
   Pi -- Tailscale VPN --> CoreServer
   Pi -. SSH/HTTP(S)/VPN .-> User[(Authorized User)]
-  Pi -. WiFi .-> RelayNode
 ```
 
 ## 1.2. Layered Architecture
