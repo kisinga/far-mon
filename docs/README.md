@@ -7,8 +7,8 @@ This document provides a comprehensive overview of the farm monitoring system, f
 1.  [System Overview](#1-system-overview)
 2.  [Hardware](#2-hardware)
 3.  [Firmware](#3-firmware)
-    - [Remote Sensor Node (`heltec-remote`)](#31-remote-sensor-node-heltec-remote)
-    - [Relay Node (`heltec-relay`)](#32-relay-node-heltec-relay)
+    - [Remote Sensor Node (`remote`)](#31-remote-sensor-node)
+    - [Relay Node (`relay`)](#32-relay-node)
 4.  [Communication Protocols](#4-communication-protocols)
 5.  [Raspberry Pi Setup](#5-raspberry-pi-setup)
 6.  [Deployment Guide](#6-deployment-guide)
@@ -156,7 +156,7 @@ The system supports a variety of sensors, which are configured in the remote nod
 
 This section provides a high-level overview of the firmware for the remote and relay nodes.
 
-### 3.1. Remote Sensor Node (`heltec-remote`)
+### 3.1. Remote Sensor Node (`remote`)
 
 The remote node's firmware is designed for minimal power consumption and reliable, config-driven operation. It collects data from sensors and transmits it to the relay node.
 
@@ -279,7 +279,7 @@ void loop() {
 }
 ```
 
-### 3.2. Relay Node (`heltec-relay`)
+### 3.2. Relay Node (`relay`)
 
 The relay node acts as a bridge between the LoRa network and the Raspberry Pi. It forwards data between the two and handles configuration updates.
 
@@ -350,7 +350,7 @@ You will need to install these libraries through the Arduino IDE's Library Manag
 
 ##### How to Use
 
-1.  Open the `heltec-relay/heltec-relay.ino` sketch in the Arduino IDE.
+1.  Open the `edge/heltec/relay/relay.ino` sketch in the Arduino IDE.
 2.  Install the required libraries from the Library Manager.
 3.  Select the correct board (Heltec LoRa 32) and port.
 4.  Upload the sketch to your device.
@@ -364,9 +364,9 @@ This section outlines the communication protocols used in the farm monitoring sy
 
 Uplink communication sends sensor data from the end devices to the server.
 
-1.  **Sensor Reading**: The `heltec-remote` reads data from its sensors.
+1.  **Sensor Reading**: The remote node reads data from its sensors.
 2.  **LoRa Transmission**: The data is broadcast as a LoRa packet.
-3.  **Relay Reception**: The `heltec-relay` receives the LoRa packet and writes it to its serial port.
+3.  **Relay Reception**: The relay node receives the LoRa packet and writes it to its serial port.
 4.  **Bridge Processing**: The `relay-bridge` reads the data from the serial port.
 5.  **ThingsBoard Telemetry**: The `relay-bridge` publishes the data to the ThingsBoard MQTT broker on the `v1/devices/me/telemetry` topic.
 
@@ -380,8 +380,8 @@ Downlink communication sends commands or configuration updates from the server t
 sequenceDiagram
     participant TB as ThingsBoard
     participant RB as relay-bridge
-    participant HR as heltec-relay (LoRa)
-    participant HD as heltec-remote (Device)
+    participant HR as Relay Node (LoRa)
+    participant HD as Remote Node (Device)
 
     TB->>RB: 1. RPC Request (MQTT)<br>{"command": "setConfig", "value": "X"}
     RB->>RB: 2. Parse & find target<br>(e.g., LoRa address 0x1A)
@@ -398,9 +398,9 @@ sequenceDiagram
 
 1.  **RPC from ThingsBoard**: An operator sends a command to a device from the ThingsBoard dashboard. ThingsBoard publishes this as an MQTT message to the `v1/devices/me/rpc/request/+` topic.
 2.  **`relay-bridge` Receives**: The `relay-bridge` is subscribed to this topic. It receives the message and parses the command.
-3.  **Command to Serial**: The `relay-bridge` translates the command into a format understood by the `heltec-relay` and sends it over the serial port. This includes the address of the target LoRa device.
-4.  **LoRa Transmission**: The `heltec-relay` transmits the command as a LoRa packet.
-5.  **Device Execution**: The target `heltec-remote` receives the packet, verifies its address, and executes the command.
+3.  **Command to Serial**: The `relay-bridge` translates the command into a format understood by the relay node and sends it over the serial port. This includes the address of the target LoRa device.
+4.  **LoRa Transmission**: The relay node transmits the command as a LoRa packet.
+5.  **Device Execution**: The target remote node receives the packet, verifies its address, and executes the command.
 6.  **Acknowledgement (Optional)**: The device can send an acknowledgement back to the `relay-bridge`, which can then update the RPC status in ThingsBoard.
 
 ## 5. Raspberry Pi Setup
@@ -466,10 +466,10 @@ This guide provides a step-by-step process for deploying the farm monitoring sys
 ### 6.1. Deployment Sequence
 
 1.  **Prepare Remote Sensor Nodes**:
-    -   Flash the firmware from `edge/heltec-remote/` onto the remote sensor nodes.
+    -   Flash the firmware from `edge/heltec/remote/` onto the remote sensor nodes.
     -   Configure the initial settings as required.
 2.  **Prepare Relay Node**:
-    -   Flash the firmware from `edge/heltec-relay/` onto the relay node.
+    -   Flash the firmware from `edge/heltec/relay/` onto the relay node.
 3.  **Set Up Raspberry Pi**:
     -   Set up the Raspberry Pi according to the instructions in the [Raspberry Pi Setup](#5-raspberry-pi-setup) guide.
     -   Install and configure Docker, ThingsBoard, and the `relay-bridge` service.
