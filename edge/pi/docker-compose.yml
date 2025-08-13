@@ -1,0 +1,225 @@
+# Farm Monitoring Stack - Docker Compose for Coolify Deployment
+# 
+# This compose file deploys the core farm monitoring services:
+# - Mosquitto MQTT broker for Meshtastic and sensor data
+# - Node-RED for automation and dashboard
+# - InfluxDB for time-series data storage
+# - Grafana for advanced dashboards (optional)
+#
+# Deploy this via Coolify after setting up the Pi with setup_farm_pi.sh
+#
+# Network Configuration:
+# - All services on bridge network for internal communication
+# - Exposed ports for external access via Tailscale
+# - Persistent volumes for data retention
+
+version: "3.8"
+
+services:
+  # MQTT Broker for Meshtastic and sensor communication
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    container_name: farm-mosquitto
+    restart: unless-stopped
+    ports:
+      - "1883:1883"      # MQTT
+      - "8883:8883"      # MQTT over TLS (optional)
+      - "9001:9001"      # WebSocket (for web clients)
+    volumes:
+      - mosquitto_config:/mosquitto/config
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_logs:/mosquitto/log
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    environment:
+      - TZ=Africa/Nairobi
+    networks:
+      - farm_network
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 5 mosquitto_sub -h localhost -t '$$SYS/broker/uptime' -C 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Node-RED for automation, flows, and dashboard
+  nodered:
+    image: nodered/node-red:3.1-18
+    container_name: farm-nodered
+    restart: unless-stopped
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    ports:
+      - "1880:1880"      # Node-RED UI
+    volumes:
+      - nodered_data:/data
+      - /etc/localtime:/etc/localtime:ro
+    environment:
+      - TZ=Africa/Nairobi
+      - NODE_RED_ENABLE_SAFE_MODE=false
+      - NODE_RED_ENABLE_PROJECTS=true
+    networks:
+      - farm_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:1880/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    # Allow Node-RED to access GPIO if needed (comment out if not using GPIO)
+    devices:
+      - "/dev/gpiomem:/dev/gpiomem"
+    user: "1000:1000"
+
+  # InfluxDB for time-series data storage
+  influxdb:
+    image: influxdb:2.7
+    container_name: farm-influxdb
+    restart: unless-stopped
+    ports:
+      - "8086:8086"      # InfluxDB HTTP API
+    volumes:
+      - influxdb_data:/var/lib/influxdb2
+      - influxdb_config:/etc/influxdb2
+      - /etc/localtime:/etc/localtime:ro
+    environment:
+      - TZ=Africa/Nairobi
+      - INFLUXDB_HTTP_MAX_BODY_SIZE=20MB
+      # Initial setup - change these!
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=admin
+      - DOCKER_INFLUXDB_INIT_PASSWORD=changeme123!
+      - DOCKER_INFLUXDB_INIT_ORG=farm
+      - DOCKER_INFLUXDB_INIT_BUCKET=water
+      - DOCKER_INFLUXDB_INIT_RETENTION=90d
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=changeme-generate-a-secure-token
+    networks:
+      - farm_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8086/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ThingsBoard IoT Platform (uncomment to enable)
+  # thingsboard:
+  #   image: thingsboard/tb-postgres:3.6.2
+  #   container_name: farm-thingsboard
+  #   restart: unless-stopped
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     mosquitto:
+  #       condition: service_healthy
+  #   ports:
+  #     - "8080:9090"      # ThingsBoard UI
+  #     - "1884:1883"      # MQTT port (alternative to avoid conflicts)
+  #   volumes:
+  #     - thingsboard_data:/data
+  #     - thingsboard_logs:/var/log/thingsboard
+  #     - /etc/localtime:/etc/localtime:ro
+  #   environment:
+  #     - TZ=Africa/Nairobi
+  #     - TB_QUEUE_TYPE=in-memory
+  #     # Database configuration
+  #     - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/thingsboard
+  #     - SPRING_DATASOURCE_USERNAME=thingsboard
+  #     - SPRING_DATASOURCE_PASSWORD=changeme123!
+  #   networks:
+  #     - farm_network
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "curl -f http://localhost:9090/login"]
+  #     interval: 60s
+  #     timeout: 20s
+  #     retries: 3
+  #     start_period: 120s
+
+  # PostgreSQL for ThingsBoard (uncomment if using ThingsBoard)
+  # postgres:
+  #   image: postgres:15-alpine
+  #   container_name: farm-postgres
+  #   restart: unless-stopped
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #     - /etc/localtime:/etc/localtime:ro
+  #   environment:
+  #     - TZ=Africa/Nairobi
+  #     - POSTGRES_DB=thingsboard
+  #     - POSTGRES_USER=thingsboard
+  #     - POSTGRES_PASSWORD=changeme123!
+  #     - PGDATA=/var/lib/postgresql/data/pgdata
+  #   networks:
+  #     - farm_network
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U thingsboard -d thingsboard"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #     start_period: 30s
+
+# Persistent volumes for data retention
+volumes:
+  mosquitto_config:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /srv/mosquitto/config
+  mosquitto_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /srv/mosquitto/data
+  mosquitto_logs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /srv/mosquitto/log
+  nodered_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /srv/nodered-data
+  influxdb_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /srv/influx
+  influxdb_config:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /srv/influx-config
+  # Uncomment these volumes if enabling ThingsBoard:
+  # thingsboard_data:
+  #   driver: local
+  #   driver_opts:
+  #     type: none
+  #     o: bind
+  #     device: /srv/thingsboard
+  # thingsboard_logs:
+  #   driver: local
+  #   driver_opts:
+  #     type: none
+  #     o: bind
+  #     device: /srv/thingsboard-logs
+  # postgres_data:
+  #   driver: local
+  #   driver_opts:
+  #     type: none
+  #     o: bind
+  #     device: /srv/postgres
+
+# Internal network for service communication
+networks:
+  farm_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
