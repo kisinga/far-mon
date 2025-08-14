@@ -37,8 +37,8 @@ graph LR
 
   RemoteSensor1 -- LoRa --> RelayNode
   RemoteSensor2 -- LoRa --> RelayNode
-  RelayNode <-- Serial/USB --> Pi
-  Pi -- Ethernet/WiFi --> Router
+  RelayNode -- WiFi AP --> Pi
+  Pi -- Ethernet --> Router
   Router -- Tailscale VPN --> CoreServer
   Pi -- Tailscale VPN --> CoreServer
   Pi -. SSH/HTTP(S)/VPN .-> User[(Authorized User)]
@@ -62,21 +62,23 @@ graph LR
 | Path | Protocol | Details |
 | :--- | :--- | :--- |
 | Remote Heltec → Relay Heltec | LoRa (Semtech) | Uplink sensor data, 433/868/915 MHz as per region. |
-| Relay Heltec → Pi | Serial/USB UART | Binary/text packets; bidirectional for configuration. |
-| Pi → ThingsBoard (internal) | MQTT/HTTP | Standard ThingsBoard device telemetry API. |
-| Pi → User | HTTP(S), VPN | Dashboard, SSH admin, secured by Tailscale VPN. |
-| Pi ↔ CoreServer (future) | VPN/MQTT/HTTP | For ETL, sync, and centralized analytics. |
+| Relay Heltec → Pi | WiFi (TCP/UDP) | Connects to Pi WiFi Access Point; Tasmota web UI and MQTT. |
+| Pi → Internet | Ethernet | Connected to farm router via LAN cable for internet access. |
+| Pi → MQTT/Node-RED/InfluxDB | Internal Docker Network | Containerized services managed by Coolify. |
+| Pi ↔ User | HTTPS via Tailscale VPN | Dashboard, SSH admin, secured by Tailscale VPN. |
+| Pi ↔ Coolify VPS | SSH via Tailscale VPN | Deployment, monitoring, and management. |
 
 #### C. Logical/Software Layer
 
 | Layer/Module | Description |
 | :--- | :--- |
-| Remote Firmware | Minimalist firmware for sensor reading, data packing, and LoRa TX/config RX. |
-| Relay Firmware | Handles LoRa RX/TX, serial bridging, configuration, and ACK logic. |
-| Pi Edge Stack | Dockerized ThingsBoard, relay-bridge service (serial↔MQTT/HTTP), VPN, logging. |
+| Remote Firmware | Configurable firmware for sensor reading, data packing, and LoRa TX/config RX. |
+| Relay Firmware | Tasmota-based firmware with LoRa capabilities, WiFi networking, and web UI. |
+| Pi Edge Stack | Coolify-managed containers: Mosquitto MQTT, Node-RED, InfluxDB, Tailscale agent. |
+| Pi Network Stack | WiFi Access Point (hostapd) + Ethernet connection for internet access. |
 | Shared Protocols | All nodes use the same serialization/packing from `/shared`. |
-| User Interface | ThingsBoard dashboards, configuration widgets, and SSH access via VPN. |
-| Future Core | Central analytics, synchronization, and long-term backup (optional). |
+| Management Layer | Coolify VPS orchestrates deployments, updates, and monitoring via Tailscale VPN. |
+| User Interface | Node-RED Dashboard, Grafana (optional), SSH access via Tailscale VPN. |
 
 ### 1.3. Information Flow
 
@@ -88,26 +90,28 @@ graph LR
     -   Transmits the data packet over LoRa to the relay node at a predefined interval.
 2.  **Relay Heltec**:
     -   Listens for incoming LoRa packets from remote nodes.
-    -   Forwards the sensor packets to the Raspberry Pi via USB serial.
+    -   Connects to Pi WiFi Access Point and forwards sensor packets via TCP/UDP.
 3.  **Raspberry Pi (Edge Server)**:
-    -   The `relay-bridge` service reads the serial data, validates it, and forwards it to ThingsBoard using the MQTT or HTTP telemetry API.
-    -   ThingsBoard stores, visualizes, and processes the incoming telemetry data.
+    -   Mosquitto MQTT broker receives data from relay via WiFi network.
+    -   Node-RED processes and routes data to InfluxDB for storage.
+    -   Dashboard services provide real-time visualization.
 4.  **User**:
-    -   Connects to the system via Tailscale VPN to access the ThingsBoard dashboard for monitoring and administration (SSH).
+    -   Connects to the system via Tailscale VPN to access Node-RED dashboard and administrative functions (SSH).
 
 #### B. Configuration & Downlink Path
 
-1.  **User/ThingsBoard UI**:
-    -   The user sends configuration changes (e.g., sample rate, sensor settings) via the ThingsBoard dashboard.
-2.  **ThingsBoard → Pi relay-bridge**:
-    -   The `relay-bridge` service receives the configuration update command from ThingsBoard.
-3.  **Pi relay-bridge → Relay Heltec**:
-    -   The service encodes the configuration into a packet and sends it to the relay node via serial.
-4.  **Relay Heltec → Remote Heltec**:
+1.  **User/Node-RED Dashboard**:
+    -   The user sends configuration changes (e.g., sample rate, sensor settings) via the Node-RED dashboard.
+2.  **Node-RED → MQTT → Relay Heltec**:
+    -   Node-RED publishes configuration commands to MQTT topics.
+    -   The relay node subscribes to configuration topics via WiFi connection.
+3.  **Relay Heltec → Remote Heltec**:
     -   The relay node broadcasts the configuration packet over LoRa and waits for an acknowledgment.
-5.  **Remote Heltec**:
+4.  **Remote Heltec**:
     -   Listens for configuration updates after each transmission.
     -   If a valid configuration is received, it is stored in flash memory, and an ACK is sent in the next uplink.
+5.  **Status Reporting**:
+    -   Configuration confirmations flow back through the same path to update the dashboard.
 
 ## 2. Hardware
 
@@ -281,15 +285,16 @@ void loop() {
 
 ### 3.2. Relay Node (`relay`)
 
-The relay node acts as a bridge between the LoRa network and the Raspberry Pi. It forwards data between the two and handles configuration updates.
+The relay node acts as a bridge between the LoRa network and the Raspberry Pi. It forwards data between the two and handles configuration updates using Tasmota firmware for enhanced configurability.
 
 #### Responsibilities
 
 -   **LoRa Uplink**: Receives sensor data from all remote nodes via LoRa.
--   **Serial Forwarding**: Forwards the received LoRa packets to the Raspberry Pi via the serial interface.
--   **Serial Downlink**: Receives configuration commands from the Pi via the serial interface.
+-   **WiFi Forwarding**: Forwards the received LoRa packets to the Raspberry Pi via WiFi/MQTT.
+-   **Configuration Management**: Receives configuration commands from the Pi via MQTT or web interface.
 -   **LoRa Downlink**: Broadcasts the configuration commands to the remote nodes via LoRa.
 -   **Status Reporting**: Handles acknowledgments from remote nodes and reports their status upstream to the Pi.
+-   **Web Interface**: Provides Tasmota web UI for direct configuration and monitoring.
 
 #### Main Loop Pseudocode
 
@@ -405,59 +410,129 @@ sequenceDiagram
 
 ## 5. Raspberry Pi Setup
 
-The Raspberry Pi serves as the edge server for the farm monitoring system. It runs a unified Docker container for all custom services, which can be configured to communicate with any ThingsBoard instance. This entire setup is managed by a self-hosted instance of Coolify.
+The Raspberry Pi serves as the edge server for the farm monitoring system. It runs containerized services (Mosquitto MQTT, Node-RED, InfluxDB) managed by Coolify via SSH deployment. The Pi operates with dual WiFi configuration: client mode for internet access and access point mode for Heltec relay connectivity.
 
 ### 5.1. Architecture
 
-All custom code for the Raspberry Pi is managed in a single Go project and deployed as a single Docker container. This simplifies deployment and management. The main service is the `relay-bridge`, which is designed to be modular and extensible.
+The Pi edge server provides multiple essential functions:
+- **Dual WiFi Networking**: Connects to farm WiFi (internet) while hosting access point for relay devices
+- **Tailscale VPN Agent**: Provides secure remote access and management via VPN tunnel
+- **Containerized Services**: MQTT broker, automation engine, time-series database
+- **Remote Management**: Coolify VPS manages deployments, updates, and monitoring
 
-The container communicates with a ThingsBoard API to send telemetry data and receive configuration updates. The ThingsBoard instance can be local or remote, and is configured via a configuration file.
+#### 5.1.1. Network Configuration
 
-#### 5.1.1. Coolify Management
+**Ethernet Connection (eth0)**:
+- Connects to farm router via LAN cable for internet access
+- Provides upstream connectivity for Tailscale VPN and Coolify management
+- Handles software updates and remote monitoring
+- More reliable than WiFi for critical infrastructure
 
-The Docker container is deployed and managed using a self-hosted Coolify instance. This provides a simple, git-based workflow for deploying updates to the edge device.
+**WiFi Access Point Mode (wlan0)**:
+- Hosts dedicated network for Heltec relay device(s)
+- Isolated from main farm network for security
+- Provides reliable local connectivity for sensor data collection
+- DHCP server assigns static IPs to known devices
+
+#### 5.1.2. Coolify Management
+
+All services are deployed and managed using a Coolify VPS instance that connects via Tailscale VPN:
+- **GitOps Workflow**: Changes pushed to git trigger automatic deployments
+- **SSH-based Deployment**: Coolify connects via Tailscale to deploy Docker containers
+- **Service Monitoring**: Health checks and automatic restart of failed services
+- **Zero-downtime Updates**: Rolling updates without service interruption
 
 ### 5.2. Project Structure
 
-The code for the Raspberry Pi services is located in the `edge/pi/` directory.
+The Pi configuration and deployment files are located in the `edge/pi/` directory.
 
 | File/Folder | Description |
 | :--- | :--- |
-| `src/` | Go source code for the services. |
-| `src/cmd/relay-bridge/` | Main application for the `relay-bridge`. |
-| `src/pkg/` | Shared Go packages (`config`, `thingsboard`, `serial`). |
-| `config.yaml` | Default configuration file for the services. |
-| `Dockerfile` | Dockerfile for building the services container. |
-| `docker-compose.yml` | Docker Compose file for local development (to be created). |
+| `docker-compose.yml` | Main Docker Compose stack for Coolify deployment. |
+| `config.yaml` | Configuration file for service parameters. |
+| `setup_scripts/` | Shell scripts for Pi initial setup, Ethernet + WiFi AP configuration. |
+| `mosquitto/` | Mosquitto MQTT broker configuration files. |
+| `nodered/` | Node-RED flows and configuration (mounted volumes). |
+| `docs/` | Pi-specific documentation and troubleshooting guides. |
 
 ### 5.3. Configuration
 
-The `relay-bridge` service has a default configuration that is compiled into the application. This default configuration can be overridden by a `config.yaml` file or by environment variables.
+Service configuration is managed through the Docker Compose file and environment variables. Each service has specific configuration requirements:
 
-The configuration loading order is as follows:
+#### 5.3.1. Service Configuration
 
-1.  Compiled-in default values.
-2.  Values from a `config.yaml` file (if present). This file is looked for in `/app/config.yaml` inside the container.
-3.  Environment variables (e.g., `THINGSBOARD_HOST`).
+**Mosquitto MQTT Broker**:
+- Configuration files mounted from `/srv/mosquitto/config/`
+- Persistent data storage in `/srv/mosquitto/data/`
+- Access control and authentication settings
 
-To customize the configuration, you can mount a `config.yaml` file into the container at `/app/config.yaml`.
+**Node-RED Automation Engine**:
+- Flows and configuration stored in `/srv/nodered-data/`
+- Dashboard UI accessible on port 1880
+- MQTT client configuration for broker connectivity
 
-Here is an example `config.yaml`:
+**InfluxDB Time-Series Database**:
+- Database files stored in `/srv/influx/`
+- Bucket configuration for data retention
+- API tokens for secure access
+
+#### 5.3.2. Network Configuration
+
+The Pi requires specific network configuration for Ethernet + WiFi AP operation:
 
 ```yaml
-thingsboard:
-  host: "your-thingsboard-host"
-  port: 8080
-  token: "YOUR_THINGSBOARD_TOKEN"
+# Example configuration for network interfaces
+network:
+  ethernet:
+    interface: eth0
+    dhcp: true  # or static IP configuration
+    network: "192.168.1.0/24"
+  wifi_ap:
+    interface: wlan0
+    ssid: "FARM_RELAY"
+    network: "10.42.0.0/24"
+    dhcp_range: "10.42.0.100,10.42.0.200"
 ```
 
 ### 5.4. Deployment
 
-To deploy the services, push your changes to the `main` branch. Coolify will automatically detect the changes, build the Docker image, and deploy it to the Raspberry Pi.
+The entire stack is deployed via Coolify using a GitOps workflow:
 
-### 5.5. ThingsBoard
+1. **Code Changes**: Push changes to the main git repository
+2. **Automatic Detection**: Coolify detects changes and triggers deployment
+3. **SSH Connection**: Coolify connects to Pi via Tailscale VPN
+4. **Service Deployment**: Docker Compose stack is updated with zero downtime
+5. **Health Monitoring**: Services are monitored for successful deployment
 
-The `relay-bridge` no longer depends on a local ThingsBoard instance. It can be configured to work with any ThingsBoard instance, whether it's running on the same device, on your local network, or in the cloud.
+#### 5.4.1. Initial Pi Setup
+
+Before Coolify can manage the Pi, initial setup is required:
+- Install Tailscale VPN agent
+- Configure Ethernet connection and WiFi access point
+- Set up Docker and required directories
+- Install and configure Coolify agent
+- Configure hostapd and dnsmasq for WiFi AP functionality
+
+### 5.5. Service Stack
+
+The containerized service stack provides complete monitoring functionality:
+
+**Mosquitto MQTT Broker**:
+- Handles all device communication
+- Provides reliable message queuing
+- Supports authentication and access control
+
+**Node-RED Automation Platform**:
+- Processes incoming sensor data
+- Provides dashboard interface for monitoring
+- Implements automation rules and alerts
+- Manages device configuration and commands
+
+**InfluxDB Time-Series Database**:
+- Stores all historical sensor data
+- Provides data retention policies
+- Supports efficient queries for analytics
+- Integrates with Grafana for advanced visualization
 
 ## 6. Deployment Guide
 
@@ -478,14 +553,25 @@ This guide provides a step-by-step process for deploying the farm monitoring sys
     -   Power on all components.
     -   For detailed wiring information, refer to the [Hardware](#2-hardware) documentation.
 
-### 6.2. Security
+### 6.3. Security Configuration
 
--   **Tailscale VPN**:
-    -   All remote access (dashboard, SSH, SFTP) is routed through the Tailscale VPN.
-    -   Ensure that no ports are directly exposed to the public internet.
--   **Physical Security**:
-    -   The Raspberry Pi and relay node should be housed in a secure, indoor location.
-    -   Remote nodes should be installed in tamper-evident enclosures where possible.
+**Network Security**:
+- **Tailscale VPN**: All remote access (dashboard, SSH, deployment) routed through secure VPN tunnel
+- **Zero Public Ports**: No services exposed directly to internet; access only via Tailscale
+- **Network Isolation**: Relay WiFi AP isolated from main farm network
+- **Encrypted Communication**: LoRa mesh uses encryption; WiFi networks use WPA3
+
+**Access Control**:
+- **SSH Key Authentication**: Password authentication disabled; key-based access only
+- **Coolify User Separation**: Dedicated user account for deployment operations
+- **Service Authentication**: MQTT and database access require authentication
+- **Device Authorization**: Only authorized Heltec devices can connect to relay network
+
+**Physical Security**:
+- **Pi Housing**: Raspberry Pi secured in weatherproof enclosure with tamper detection
+- **Relay Protection**: Relay node in protected location with backup power
+- **Remote Node Security**: Field sensors in tamper-evident enclosures where possible
+- **Backup Strategy**: Automated data backup via Tailscale to remote storage
 
 ## 7. Maintenance and Extensibility
 
@@ -511,18 +597,107 @@ This section provides guidance on maintaining and extending the farm monitoring 
 
 #### Adding New Sensors
 
--   Update the remote node's configuration via LoRa downlink. No firmware flashing is required unless a new hardware class is being introduced.
+- **Remote Configuration**: Update sensor configurations via Node-RED dashboard
+- **LoRa Downlink**: Send new configurations through relay node to remote nodes
+- **Firmware Updates**: OTA updates can be pushed via LoRa mesh if supported
+- **New Sensor Types**: Add support by updating remote node firmware and Node-RED flows
 
 #### Adding More Remote Nodes
 
--   The system is scalable to multiple nodes. Each remote node must have a unique device ID/address, which is defined in the protocol.
+- **Scalable Architecture**: System supports multiple remote nodes with unique LoRa addresses
+- **Auto-Discovery**: New nodes can auto-register with system upon first connection
+- **Load Balancing**: Multiple relay nodes can be deployed for larger coverage areas
+- **Mesh Networking**: Nodes can relay data for extended range
 
-#### Swapping the Communication Interface
+#### Network Expansion
 
--   The `relay-bridge` service on the Pi can be modified to support different communication interfaces, such as a LoRa Hat, by updating the comms class.
+- **Additional WiFi APs**: Deploy multiple Pi units for extended coverage
+- **Mesh WiFi**: Use mesh WiFi system for improved relay node connectivity
+- **LoRa Range Extension**: Add repeater nodes for long-distance sensor deployment
+- **Multiple Site Support**: Coolify can manage multiple farm sites from single VPS
 
-#### Expansion Paths
+#### Integration Capabilities
 
--   **Pi LoRa Hat**: The relay node can be replaced with a LoRa Hat on the Pi for a more direct gateway.
--   **Cellular/Satellite Fallback**: A cellular or satellite modem can be added to the Pi for WAN redundancy.
--   **Additional Devices**: The system can be integrated with other field devices (e.g., irrigation systems, weather stations) by extending the protocol and firmware.
+- **API Integration**: Node-RED flows can integrate with external APIs and services
+- **Database Expansion**: Additional databases (PostgreSQL, Redis) can be added to stack
+- **Third-party Services**: Integration with weather APIs, irrigation systems, ERPNext
+- **Mobile Apps**: Develop mobile applications using Node-RED dashboard or custom APIs
+- **Alert Systems**: SMS, email, Telegram notifications via Node-RED integrations
+
+---
+
+## 9. SSH Tunneling for Remote Device Access
+
+This section covers how to securely access Heltec device web interfaces remotely using SSH tunneling through the Raspberry Pi.
+
+### 9.1. SSH Tunneling Setup
+
+#### **Steps:**
+
+1. **Find Heltec IP:**
+   ```bash
+   sudo apt install nmap
+   nmap -sn 10.42.0.0/24
+   ```
+
+2. **Create Tunnel:**
+   ```bash
+   ssh -L 8080:10.42.0.247:80 pi@raspberrypi
+   ```
+
+3. **Access Web UI:**
+   ```
+   http://localhost:8080
+   ```
+
+### 9.2. Edge Cases & Solutions
+
+| **Issue**               | **Solution**                                                                 |
+|-------------------------|-----------------------------------------------------------------------------|
+| Heltec IP changes        | Assign static IP to Heltec device via router or Pi DHCP configuration.     |
+| Pi Tailscale IP changes  | Use hostname: `pi@raspberrypi.tailscale.net`.                              |
+| SSH drops                | Use `autossh`: `autossh -M 0 -L 8080:10.42.0.247:80 pi@raspberrypi`.       |
+| Port conflict            | Change local port: `ssh -L 8081:10.42.0.247:80 pi@raspberrypi`.            |
+
+### 9.3. Scalability
+
+1. **Multiple Devices:**
+   ```bash
+   ssh -L 8080:10.42.0.247:80 pi@raspberrypi
+   ssh -L 8081:10.42.0.248:80 pi@raspberrypi
+   ```
+
+2. **Automation Script:**
+   ```bash
+   #!/bin/bash
+   ssh -L 8080:10.42.0.247:80 pi@raspberrypi
+   ```
+
+3. **Persistent Tunnels:**
+   ```bash
+   tmux new-session -d 'ssh -L 8080:10.42.0.247:80 pi@raspberrypi'
+   ```
+
+### 9.4. Security Considerations
+
+- **SSH Keys**: Use key-based authentication: `ssh-copy-id pi@raspberrypi`
+- **Heltec Security**: Secure Tasmota web UI with authentication and firewall rules
+- **Network Isolation**: Ensure relay network remains isolated from farm network
+- **Access Logging**: Monitor SSH access and tunnel usage for security auditing
+
+### 9.5. Tasmota Web Interface Access
+
+The SSH tunnel provides access to the Tasmota web interface on Heltec devices:
+- **Configuration Management**: GPIO settings, WiFi configuration, device parameters
+- **OTA Updates**: Firmware updates without physical access to devices
+- **Real-time Monitoring**: Device status, sensor readings, and system information
+- **Command Interface**: Execute Tasmota commands remotely via web console
+
+### 9.6. Summary
+
+| **Aspect**         | **Details**                                                                 |
+|---------------------|-----------------------------------------------------------------------------|
+| **Reproducibility** | Static IPs, documented commands, automation scripts.                       |
+| **Edge Cases**      | Handle IP changes, SSH drops, port conflicts with documented solutions.    |
+| **Scalability**     | Multiple devices, automation, persistent tunnels for production use.       |
+| **Security**        | SSH keys, device authentication, network isolation, access monitoring.     |

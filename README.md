@@ -22,37 +22,53 @@ A modular, resilient farm-monitoring platform that **consolidates resources** an
 
 ```mermaid
 graph TD;
-    subgraph "Remote Site"
-        Remote_Node[Remote Node <br/> ESP32/Heltec]
+    subgraph "Remote Field Site"
+        Remote_Node[Remote Node <br/> ESP32/Heltec<br/>Field Sensors]
     end
-    subgraph "Local Site"
-        Relay_Node[Relay Node <br/> LoRa <=> Serial]
-        Pi_Edge[Pi Edge Node <br/> Aggregation, DB, Rules]
-        ERPNext[ERPNext / Dashboard]
+    subgraph "Farm Site (Local)"
+        Relay_Node[Relay Node <br/> LoRa <=> WiFi<br/>Tasmota Firmware<br/>Connected to Pi AP]
+        Pi_Edge[Pi Edge Node <br/> WiFi AP + Ethernet<br/>Tailscale + Coolify<br/>MQTT, Node-RED, InfluxDB]
+        WiFi_Router[WiFi Router<br/>Internet + LAN Access]
+    end
+    subgraph "Remote Management"
+        Coolify_VPS[Coolify VPS<br/>Deployment Management]
+        Tailscale_Network[Tailscale Network<br/>Secure VPN Access]
     end
 
     Remote_Node -- LoRa --> Relay_Node;
-    Relay_Node -- Serial --> Pi_Edge;
-    Pi_Edge -- MQTT/REST --> ERPNext;
+    Relay_Node -- WiFi AP --> Pi_Edge;
+    Pi_Edge -- Ethernet --> WiFi_Router;
+    Pi_Edge -- Tailscale VPN --> Tailscale_Network;
+    Coolify_VPS -- Tailscale VPN --> Pi_Edge;
+    Coolify_VPS -- SSH Deploy --> Pi_Edge;
 
     style Remote_Node fill:#f9f,stroke:#333,stroke-width:2px
     style Relay_Node fill:#ccf,stroke:#333,stroke-width:2px
     style Pi_Edge fill:#cfc,stroke:#333,stroke-width:2px
-    style ERPNext fill:#fcf,stroke:#333,stroke-width:2px
+    style Coolify_VPS fill:#fcf,stroke:#333,stroke-width:2px
+    style Tailscale_Network fill:#ffc,stroke:#333,stroke-width:2px
 ```
 
 - **Remote Nodes**  
-  – ESP32/Heltec devices  
-  – SensorConfig schema, NVS persistence  
+  – ESP32/Heltec devices in field locations  
+  – Configurable firmware with GPIO management  
+  – Battery-powered with solar charging  
 - **Relay Nodes**  
-  – LoRa ↔ Serial bridge  
-  – Downlink command dispatch  
+  – LoRa ↔ WiFi bridge with Tasmota firmware  
+  – Connects to Pi WiFi Access Point  
+  – Web UI for configuration and OTA updates  
+  – Bidirectional command dispatch  
 - **Pi Edge Node**  
-  – Aggregation, config pushes, local DB  
-  – Threshold “rule engine” daemon  
-- **Integration Layer**  
-  – MQTT or REST → ERPNext Adapter  
-  – Time-series ingestion service  
+  – Ethernet connection for internet access  
+  – WiFi Access Point for relay devices  
+  – Tailscale VPN for secure remote access  
+  – Coolify-managed containerized services  
+  – MQTT broker, Node-RED automation, InfluxDB storage  
+- **Management Layer**  
+  – Coolify VPS for deployment orchestration  
+  – Tailscale network for secure connectivity  
+  – SSH tunneling for device access  
+  – GitOps workflow for updates  
 
 ---
 
