@@ -504,14 +504,28 @@ The entire stack is deployed via Coolify using a GitOps workflow:
 4. **Service Deployment**: Docker Compose stack is updated with zero downtime
 5. **Health Monitoring**: Services are monitored for successful deployment
 
-#### 5.4.1. Initial Pi Setup
+#### 5.4.1. Automated Pi Setup
 
-Before Coolify can manage the Pi, initial setup is required:
-- Install Tailscale VPN agent
-- Configure Ethernet connection and WiFi access point
-- Set up Docker and required directories
-- Install and configure Coolify agent
-- Configure hostapd and dnsmasq for WiFi AP functionality
+The Pi setup is automated using the `setup_farm_pi.sh` script which handles:
+- System updates and essential package installation
+- Tailscale VPN installation and configuration
+- Docker and Coolify installation
+- WiFi hotspot setup for Heltec device connectivity
+- Repository cloning and script preparation
+
+**One-line installation:**
+```bash
+curl -sSL https://github.com/yourusername/farm/raw/main/edge/pi/setup_farm_pi.sh | bash
+```
+
+**WiFi Hotspot Management:**
+```bash
+# Check connected Heltec devices
+sudo ./edge/pi/wifi_hotspot.sh check
+
+# Reconfigure hotspot if needed  
+sudo ./edge/pi/wifi_hotspot.sh setup
+```
 
 ### 5.5. Service Stack
 
@@ -540,18 +554,28 @@ This guide provides a step-by-step process for deploying the farm monitoring sys
 
 ### 6.1. Deployment Sequence
 
-1.  **Prepare Remote Sensor Nodes**:
-    -   Flash the firmware from `edge/heltec/remote/` onto the remote sensor nodes.
-    -   Configure the initial settings as required.
-2.  **Prepare Relay Node**:
-    -   Flash the firmware from `edge/heltec/relay/` onto the relay node.
-3.  **Set Up Raspberry Pi**:
-    -   Set up the Raspberry Pi according to the instructions in the [Raspberry Pi Setup](#5-raspberry-pi-setup) guide.
-    -   Install and configure Docker, ThingsBoard, and the `relay-bridge` service.
-4.  **Connect Components**:
-    -   Connect the relay node to the Raspberry Pi via USB.
-    -   Power on all components.
-    -   For detailed wiring information, refer to the [Hardware](#2-hardware) documentation.
+#### **Phase 1: Raspberry Pi Infrastructure Setup**
+1. **Install Raspbian OS** on Pi (use Pi Imager with SSH enabled)
+2. **Run automated setup**: `curl -sSL https://github.com/yourusername/farm/raw/main/edge/pi/setup_farm_pi.sh | bash`
+3. **Complete Tailscale authentication** when prompted
+4. **Setup Coolify** via web interface at `http://<tailscale-ip>:8000`
+5. **Deploy Docker stack** using Coolify's git integration
+
+#### **Phase 2: Network Infrastructure Verification**
+1. **Verify WiFi hotspot**: `sudo ./edge/pi/wifi_hotspot.sh check`
+2. **Confirm MQTT broker** is running: `docker ps | grep mosquitto`
+3. **Test Node-RED dashboard**: Access at `http://<tailscale-ip>:1880`
+
+#### **Phase 3: Heltec Device Setup**
+1. **Flash Relay Node** firmware from `edge/heltec/relay/`
+2. **Configure Relay Node** to connect to Pi hotspot network (SSID: `PiHotspot`)
+3. **Flash Remote Sensor Nodes** firmware from `edge/heltec/remote/`
+4. **Deploy Remote Nodes** at sensor locations with LoRa connectivity to relay
+
+#### **Phase 4: System Verification**
+1. **Check device connectivity**: Monitor hotspot connections and MQTT traffic
+2. **Verify data flow**: Confirm sensor data reaches InfluxDB via Node-RED
+3. **Test remote access**: Access dashboards via Tailscale from anywhere
 
 ### 6.3. Security Configuration
 

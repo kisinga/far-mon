@@ -6,7 +6,11 @@
 # - InfluxDB for time-series data storage
 # - Grafana for advanced dashboards (optional)
 #
-# Deploy this via Coolify after setting up the Pi with setup_farm_pi.sh
+# Setup Flow:
+# 1. Install Raspbian on Pi
+# 2. Run setup_farm_pi.sh to install Tailscale + Coolify + WiFi hotspot
+# 3. Deploy this stack via Coolify using Tailscale connection
+# 4. Heltec devices connect to Pi hotspot and communicate with MQTT broker
 #
 # Network Configuration:
 # - All services on bridge network for internal communication
