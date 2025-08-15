@@ -37,3 +37,9 @@ Downlinks are used to configure remote nodes.
 - `interval`: Sets the uplink interval in seconds.
 
 This standardized structure ensures that the `relay-bridge` can parse all incoming data and construct valid commands.
+
+I need to connect these devices
+https://www.pixelelectric.com/electronic-modules/miscellaneous-modules/logic-converter/ttl-to-rs485-automatic-control-module/
+https://www.pixelelectric.com/products/sensors/distance-vision/ultrasonic-proximity-sensor/jsn-sr04t-waterproof-ultrasonic-sensor/
+https://www.pixelelectric.com/category/water-level-sensor-float-switch/
+https://www.pixelelectric.com/sensors/load-pressure-flow-vibration/water-tds-ph-flow-level-sensor/yf-g1-dn25-1-2-100l-min-water-flow-sensor/
