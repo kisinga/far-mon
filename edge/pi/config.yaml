@@ -1,4 +1,0 @@
-thingsboard:
-  host: "localhost"
-  port: 8080
-  token: "YOUR_THINGSBOARD_TOKEN"
