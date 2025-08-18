@@ -70,16 +70,9 @@ class OledDisplay {
     display.setFont(ArialMT_Plain_10);
     display.setTextAlignment(TEXT_ALIGN_LEFT);
 
-    // Minimal splash for bring-up
-    display.clear();
-    // Center the 63x63 logo on a 128x64 screen
-    const int16_t logoX = (display.width() - logo_width) / 2;
-    const int16_t logoY = (display.height() - logo_height) / 2;
-    display.drawXbm(logoX, logoY, logo_width, logo_height, logo_bits);
-    display.setTextAlignment(TEXT_ALIGN_CENTER);
-    display.drawString(display.width() / 2, 0, F("Farm"));
-    display.display();
-    delay(1200);
+    // Configure non-blocking splash; will render during tick() for splashDurationMs
+    splashActive = true;
+    splashStartedMs = millis();
   }
 
   void setI2cClock(uint32_t hz) {
@@ -124,6 +117,19 @@ class OledDisplay {
 
     display.clear();
 
+    // Splash screen (non-blocking)
+    if (splashActive && (nowMs - splashStartedMs) < splashDurationMs) {
+      const int16_t logoX = (display.width() - logo_width) / 2;
+      const int16_t logoY = (display.height() - logo_height) / 2;
+      display.drawXbm(logoX, logoY, logo_width, logo_height, logo_bits);
+      display.setTextAlignment(TEXT_ALIGN_CENTER);
+      display.drawString(display.width() / 2, 0, F("Farm"));
+      display.display();
+      return;
+    } else if (splashActive) {
+      splashActive = false;
+    }
+
     // Header line: device id and uptime (seconds)
     if (deviceId != nullptr) {
       display.setTextAlignment(TEXT_ALIGN_LEFT);
@@ -135,21 +141,18 @@ class OledDisplay {
     // Content area
     display.setTextAlignment(TEXT_ALIGN_LEFT);
     if (debugCb != nullptr && timeNotExpired(nowMs, debugUntilMs)) {
-      // Draw debug content starting at y=12
       display.drawHorizontalLine(0, 10, display.width());
-      display.setColor(WHITE);
-      display.setTextAlignment(TEXT_ALIGN_LEFT);
-      // Push origin by drawing offset; renderers should draw within 0..(w,h)
       debugCb(display, debugCtx);
     } else if (homescreenCb != nullptr) {
       display.drawHorizontalLine(0, 10, display.width());
       homescreenCb(display, homescreenCtx);
       // Clear debug state once expired
-      debugCb = nullptr;
-      debugCtx = nullptr;
-      debugUntilMs = 0;
+      if (debugUntilMs != 0 && (int32_t)(nowMs - debugUntilMs) >= 0) {
+        debugCb = nullptr;
+        debugCtx = nullptr;
+        debugUntilMs = 0;
+      }
     } else {
-      // Default empty screen
       display.drawHorizontalLine(0, 10, display.width());
       display.drawString(0, 14, F("No homescreen set"));
     }
@@ -195,6 +198,11 @@ class OledDisplay {
   const char *deviceId = nullptr;
 
   int8_t vextPinOverride = -1; // -1 means use Vext macro if available
+
+  // Splash state
+  bool splashActive = false;
+  uint32_t splashStartedMs = 0;
+  uint32_t splashDurationMs = 1200; // ms
 
   RenderCallback homescreenCb = nullptr;
   void *homescreenCtx = nullptr;
