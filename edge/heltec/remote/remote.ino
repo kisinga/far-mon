@@ -1,0 +1,219 @@
+// Minimal, extendable coordination logic for Heltec/ESP32 remote node
+// - Uses shared scheduler from lib/scheduler.h
+// - Device-specific AppState remains local to this file
+// - Example tasks: heartbeat, analog input reader, periodic reporter
+
+#include <Arduino.h>
+#include "../lib/scheduler.h"
+#include "../lib/display.h"
+#include "../lib/debug.h"
+
+// ===== Configuration =====
+// Change to any valid ADC-capable pin on your board. Heltec LoRa 32 commonly uses GPIO34.
+static const uint8_t ANALOG_INPUT_PIN = 34; // ADC1 channel
+static const float ANALOG_REFERENCE_VOLTAGE = 3.30f; // Volts
+static const bool ENABLE_OLED_DISPLAY = true; // Set false to disable screen usage at runtime
+
+// Device identity (1-byte id encoded as two ASCII digits to match docs)
+static const char DEVICE_ID[] = "03";
+
+// Task cadence
+static const uint32_t HEARTBEAT_INTERVAL_MS = 1000;   // 1s
+static const uint32_t ANALOG_READ_INTERVAL_MS = 200;  // 5 Hz sampling
+static const uint32_t REPORT_INTERVAL_MS = 2000;      // 2s
+
+// ===== Device-specific Application State =====
+struct AppState {
+  // Time
+  uint32_t nowMs = 0;
+
+  // Analog sensor
+  int analogRaw = 0;         // 0..4095 on ESP32
+  float analogVoltage = 0.0; // Volts
+
+  // Heartbeat
+  bool heartbeatOn = false;
+};
+
+static AppState appState;
+static TaskScheduler<AppState, 8> scheduler;
+static OledDisplay oled;
+static DebugRouter debugRouter;
+
+// ===== Utilities =====
+static float convertAdcToVolts(int adcRaw) {
+  // ESP32 default ADC resolution is 12-bit (0..4095). Keep simple mapping here.
+  const float scale = 1.0f / 4095.0f;
+  return (float)adcRaw * scale * ANALOG_REFERENCE_VOLTAGE;
+}
+
+// ===== Tasks =====
+
+static void taskHeartbeat(AppState &state) {
+  state.heartbeatOn = !state.heartbeatOn;
+  // Consolidated debug: serial + OLED overlay (800ms)
+  debugRouter.debug(
+    // OLED renderer
+    [](SSD1306Wire &d, void *ctx) {
+      (void)ctx;
+      d.setTextAlignment(TEXT_ALIGN_LEFT);
+      d.drawString(0, 14, F("Heartbeat"));
+      d.drawString(0, 28, F("Toggled"));
+    },
+    nullptr,
+    // Serial renderer
+    [](Print &out, void *ctx) {
+      AppState *s = static_cast<AppState*>(ctx);
+      out.print(F("heartbeat on="));
+      out.print(s->heartbeatOn ? F("1") : F("0"));
+    },
+    &appState,
+    state.nowMs,
+    800
+  );
+}
+
+static void taskReadAnalog(AppState &state) {
+  // Simple read; add averaging/median filtering later if needed
+  const int raw = analogRead(ANALOG_INPUT_PIN);
+  state.analogRaw = raw;
+  state.analogVoltage = convertAdcToVolts(raw);
+
+  // Consolidated debug: serial + OLED overlay (400ms)
+  debugRouter.debug(
+    // OLED renderer
+    [](SSD1306Wire &d, void *ctx) {
+      AppState *s = static_cast<AppState*>(ctx);
+      d.setTextAlignment(TEXT_ALIGN_LEFT);
+      d.drawString(0, 14, F("Analog"));
+      d.drawString(0, 28, String("raw=") + String(s->analogRaw));
+      d.drawString(0, 42, String("V=") + String(s->analogVoltage, 3));
+    },
+    &appState,
+    // Serial renderer
+    [](Print &out, void *ctx) {
+      AppState *s = static_cast<AppState*>(ctx);
+      out.print(F("analog raw="));
+      out.print(s->analogRaw);
+      out.print(F(" V="));
+      out.print(s->analogVoltage, 3);
+    },
+    &appState,
+    state.nowMs,
+    400
+  );
+}
+
+static void taskReport(AppState &state) {
+  // Minimal key=value CSV line as per docs
+  Serial.print(F("id="));
+  Serial.print(DEVICE_ID);
+  Serial.print(F(",ain_raw="));
+  Serial.print(state.analogRaw);
+  Serial.print(F(",ain_v="));
+  Serial.println(state.analogVoltage, 3);
+
+  // Consolidated debug: serial + OLED overlay (700ms)
+  debugRouter.debug(
+    // OLED renderer
+    [](SSD1306Wire &d, void *ctx) {
+      (void)ctx;
+      d.setTextAlignment(TEXT_ALIGN_LEFT);
+      d.drawString(0, 14, F("Report"));
+      d.drawString(0, 28, F("Sent"));
+    },
+    nullptr,
+    // Serial renderer
+    [](Print &out, void *ctx) {
+      AppState *s = static_cast<AppState*>(ctx);
+      out.print(F("report ain_raw="));
+      out.print(s->analogRaw);
+      out.print(F(" ain_v="));
+      out.print(s->analogVoltage, 3);
+    },
+    &appState,
+    state.nowMs,
+    700
+  );
+}
+
+// Display homescreen renderer: called when no debug overlay is active
+static void renderHome(SSD1306Wire &d, void *ctx) {
+  AppState *s = static_cast<AppState*>(ctx);
+  // Header line is handled in display tick; draw content area from y=14
+
+  // Column layout
+  const int16_t leftX = 0;
+  const int16_t rightX = d.width();
+
+  // Left: Analog card
+  d.setTextAlignment(TEXT_ALIGN_LEFT);
+  d.setFont(ArialMT_Plain_10);
+  d.drawString(leftX, 14, F("Analog"));
+  d.setFont(ArialMT_Plain_16);
+  d.drawString(leftX, 26, String(s->analogVoltage, 3) + String(" V"));
+  d.setFont(ArialMT_Plain_10);
+  d.drawString(leftX, 44, String("raw ") + String(s->analogRaw));
+
+  // Right: Status card
+  d.setTextAlignment(TEXT_ALIGN_RIGHT);
+  d.setFont(ArialMT_Plain_10);
+  d.drawString(rightX, 14, F("Status"));
+  d.setFont(ArialMT_Plain_16);
+  d.drawString(rightX, 26, s->heartbeatOn ? F("HB ON") : F("HB OFF"));
+}
+
+static void taskDisplay(AppState &state) {
+  oled.tick(state.nowMs);
+}
+
+// ===== Arduino Lifecycle =====
+void setup() {
+  Serial.begin(115200);
+  delay(200);
+  Serial.println();
+  Serial.println(F("[boot] Remote node starting..."));
+
+  // ADC setup (ESP32)
+  // On ESP32, analogRead returns 0..4095 by default. Some pins require selecting attenuation for full range.
+  // Keep defaults for simplicity; users can tune via analogSetPinAttenuation if needed.
+  pinMode(ANALOG_INPUT_PIN, INPUT);
+
+  // Display init (optional)
+  oled.begin(ENABLE_OLED_DISPLAY);
+  oled.setDeviceId(DEVICE_ID);
+  oled.setHomescreenRenderer(renderHome, &appState);
+  debugRouter.begin(true, &oled, DEVICE_ID);
+
+  // Probe I2C/display presence and print diagnostics
+  if (ENABLE_OLED_DISPLAY) {
+    // Ensure I2C bus speed is set (optional)
+    oled.setI2cClock(500000);
+    bool found = oled.probeI2C(OLED_I2C_ADDR);
+    Serial.print(F("[display] probe 0x"));
+    Serial.print(OLED_I2C_ADDR, HEX);
+    Serial.print(F(" found="));
+    Serial.println(found ? F("yes") : F("no"));
+    if (!found) {
+      Serial.println(F("[display] Tips: check Vext power (LOW=ON), SDA/SCL pins, and address (0x3C vs 0x3D)"));
+      oled.i2cScan(Serial);
+    }
+  }
+
+  // Register tasks
+  scheduler.registerTask("heartbeat", taskHeartbeat, HEARTBEAT_INTERVAL_MS);
+  scheduler.registerTask("analog_read", taskReadAnalog, ANALOG_READ_INTERVAL_MS);
+  scheduler.registerTask("report", taskReport, REPORT_INTERVAL_MS);
+  scheduler.registerTask("display", taskDisplay, 1000); // ~5 FPS
+
+  Serial.println(F("[boot] Tasks registered."));
+}
+
+void loop() {
+  appState.nowMs = millis();
+  scheduler.tick(appState);
+  // Yield to WiFi/BLE stacks if enabled; cheap delay to avoid tight spinning
+  delay(1);
+}
+
+
