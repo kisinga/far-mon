@@ -11,6 +11,7 @@
 #include "../lib/logger.h"
 #include "LoRaWan_APP.h"
 #include "../lib/lora_comm.h"
+#include "../lib/board_config.h"
 
 // ===== Master Identity =====
 static const uint8_t MASTER_ID = 0x01; // numeric id for frames
@@ -34,11 +35,16 @@ static LoRaComm lora;
 // ===== Optional Battery Reading (modularized) =====
 #include "../lib/battery.h"
 static Battery::Config g_battCfg;
-// Optional charge status pin: active-low typical for charger STAT
+// Optional charge status pin and polarity from board_config
 #ifdef CHARGE_STATUS_PIN
 static const int8_t kChargeStatusPin = CHARGE_STATUS_PIN;
 #else
 static const int8_t kChargeStatusPin = -1;
+#endif
+#ifdef CHARGE_STATUS_ACTIVE_LOW
+static const bool kChargeActiveLow = (CHARGE_STATUS_ACTIVE_LOW != 0);
+#else
+static const bool kChargeActiveLow = true; // default assumption
 #endif
 
 // Replace custom radio callbacks with LoRaComm event callbacks
@@ -100,11 +106,22 @@ static void taskDisplay(AppState &state) {
   // Debug battery readings
   bool ok = false;
   uint16_t vBatMv = Battery::readBatteryMilliVolts(g_battCfg, ok);
+  static uint32_t lastMs = 0;
+  static uint16_t lastMv = 0;
+  static bool slopeCharging = false;
   if (ok) {
     Serial.print(F("[battery] voltage="));
     Serial.print(vBatMv / 1000.0f, 2);
     Serial.print(F("V percent="));
     Serial.println(bp);
+    // Slope-based fallback: if voltage rising >=20mV over ~5s, infer charging; falling resets
+    if (lastMs == 0) { lastMs = state.nowMs; lastMv = vBatMv; }
+    uint32_t dt = state.nowMs - lastMs;
+    if (dt >= 5000) {
+      int32_t dv = (int32_t)vBatMv - (int32_t)lastMv;
+      if (dv >= 10) slopeCharging = true; else if (dv <= -10) slopeCharging = false;
+      lastMs = state.nowMs; lastMv = vBatMv;
+    }
   } else {
     Serial.println(F("[battery] read failed"));
   }
@@ -112,10 +129,27 @@ static void taskDisplay(AppState &state) {
   oled.setBatteryStatus(haveBatt, haveBatt ? bp : 0);
   if (kChargeStatusPin >= 0) {
     int lv = digitalRead((uint8_t)kChargeStatusPin);
-    // Assume active-low: 0 = charging
-    oled.setBatteryCharging(lv == LOW);
-    Serial.print(F("[battery] charging="));
-    Serial.println(lv == LOW ? "yes" : "no");
+    static bool sawLow = false, sawHigh = false, gpioReliable = false;
+    if (lv == LOW) sawLow = true; else sawHigh = true;
+    if (!gpioReliable && sawLow && sawHigh) gpioReliable = true;
+    const bool chargingGpio = kChargeActiveLow ? (lv == LOW) : (lv == HIGH);
+    const bool chargingFinal = gpioReliable ? chargingGpio : slopeCharging;
+    oled.setBatteryCharging(chargingFinal);
+    Serial.print(F("[battery] raw="));
+    Serial.print(lv);
+    Serial.print(F(" actLow="));
+    Serial.print(kChargeActiveLow ? "1" : "0");
+    Serial.print(F(" gpioRel="));
+    Serial.print(gpioReliable ? "1" : "0");
+    Serial.print(F(" dvdt="));
+    Serial.print(slopeCharging ? "+" : "-");
+    Serial.print(F(" final="));
+    Serial.println(chargingFinal ? "yes" : "no");
+  } else {
+    // No GPIO routed: rely on voltage-slope inference
+    oled.setBatteryCharging(slopeCharging);
+    Serial.print(F("[battery] no charge pin; dvdt="));
+    Serial.println(slopeCharging ? "+" : "-");
   }
   oled.tick(state.nowMs);
 }
@@ -177,38 +211,24 @@ void setup() {
   Logger::setLevel(Logger::Level::Info);
   Logger::setVerbose(false);
 
-  // Battery config: set adcPin/divider here if available
-#ifdef BATTERY_ADC_PIN
-  g_battCfg.adcPin = BATTERY_ADC_PIN;
-  // Recommended: 11dB attenuation applied by helper; set divider per schematic
-  // Example default 100k:100k
-  g_battCfg.dividerRatio = 2.0f;
-  g_battCfg.samples = 12;
-  Serial.print(F("[battery] adcPin="));
-  Serial.print((int)g_battCfg.adcPin);
-  Serial.print(F(" ratio="));
-  Serial.print(g_battCfg.dividerRatio, 3);
-  Serial.print(F(" samples="));
-  Serial.println((int)g_battCfg.samples);
-#else
-  #if defined(ARDUINO_heltec_wifi_32_lora_V3)
-    // Heltec WiFi LoRa 32 V3 defaults (from board schematic/known examples)
-    g_battCfg.adcPin = 1;      // VBAT_ADC
-    g_battCfg.ctrlPin = 37;    // VBAT_CTRL (active-low enable)
-    g_battCfg.samples = 12;
-    g_battCfg.useHeltecV3Scaling = true; // raw/238.7
-    Serial.println(F("[battery] Heltec V3 defaults applied (adcPin=1, ctrlPin=37, raw/238.7)"));
-  #else
-    g_battCfg.adcPin = 0xFF; // disabled
-    Serial.println(F("[battery] disabled: define BATTERY_ADC_PIN to enable VBAT reading"));
-  #endif
-#endif
+  // Battery config for this board (mirror remote setup)
+  g_battCfg.adcPin = BATTERY_ADC_PIN;      // VBAT_ADC
+  g_battCfg.ctrlPin = VBAT_CTRL;           // VBAT_CTRL (active-low enable)
+  g_battCfg.samples = 12;                  // More samples for stability
+  g_battCfg.useHeltecV3Scaling = true;     // Use empirical scaling constant
+  g_battCfg.setAttenuationOnFirstRead = true;
+  g_battCfg.voltageEmpty = 3.04f;
+  g_battCfg.voltageFull = 4.26f;
+  analogSetPinAttenuation(BATTERY_ADC_PIN, ADC_11db);
+  Serial.println(F("[battery] Heltec V3 config applied (adcPin=1, ctrlPin=37, raw/238.7)"));
 
-  // Configure optional charge status pin (input with pull-up if active-low open-drain)
+  // Configure optional charge status pin (plain INPUT to avoid sourcing current)
   if (kChargeStatusPin >= 0) {
-    pinMode((uint8_t)kChargeStatusPin, INPUT_PULLUP);
+    pinMode((uint8_t)kChargeStatusPin, INPUT);
     Serial.print(F("[battery] charge status pin="));
-    Serial.println((int)kChargeStatusPin);
+    Serial.print((int)kChargeStatusPin);
+    Serial.print(F(" activeLow="));
+    Serial.println(kChargeActiveLow ? "1" : "0");
   } else {
     Serial.println(F("[battery] no charge status pin configured (define CHARGE_STATUS_PIN if routed)"));
   }

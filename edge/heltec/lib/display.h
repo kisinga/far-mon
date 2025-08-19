@@ -182,12 +182,7 @@ class OledDisplay {
       const bool showBars = batteryStatusValid && !batteryCharging;
       Battery::drawIcon(display, battX, battY, 16, 8, showBars ? batteryPercent : 255 /*outline-only*/);
       if (batteryCharging) {
-        const int16_t cx = battX + 8;  // center-ish within 16px body
-        const int16_t cy = battY + 1;
-        // Zig-zag bolt using simple lines to avoid clutter
-        display.drawLine(cx,     cy,     cx - 3, cy + 3);
-        display.drawLine(cx - 3, cy + 3, cx + 1, cy + 3);
-        display.drawLine(cx + 1, cy + 3, cx - 2, cy + 7);
+        Battery::drawChargingBolt(display, battX, battY, 16, 8);
       }
     }
 

@@ -150,43 +150,85 @@ inline bool readPercent(Config &cfg, uint8_t &outPercent) {
   return true;
 }
 
-// Draw a compact battery icon. If percent is >100 (e.g., 255), draws outline only.
+// Draw a compact, pixel-accurate battery icon with 4 bars.
+// If percent > 100 (e.g., 255), only the outline is drawn (no bars).
 inline void drawIcon(SSD1306Wire &d, int16_t x, int16_t y, int16_t bodyW, int16_t bodyH, uint8_t percent) {
-  // Battery outline with tip + 4 discrete bars inside
+  // Clamp minimums to ensure shape integrity
   if (bodyW < 12) bodyW = 12;
   if (bodyH < 8) bodyH = 8;
 
-  // Draw body outline
+  // Body outline
   d.drawRect(x, y, bodyW, bodyH);
-  // Draw tip
+  // Tip: fixed 2px width, vertically centered to body height
   const int16_t tipW = 2;
-  d.fillRect(x + bodyW, y + (bodyH / 4), tipW, bodyH - (bodyH / 2));
+  const int16_t tipH = max<int16_t>(3, bodyH / 2);
+  const int16_t tipY = y + ((bodyH - tipH) / 2);
+  d.fillRect(x + bodyW, tipY, tipW, tipH);
 
-  // Inner drawable area
+  // Inner drawable area (1px margin)
   const int16_t ix = x + 1;
   const int16_t iy = y + 1;
   const int16_t iw = bodyW - 2;
   const int16_t ih = bodyH - 2;
 
-  // Compute 4 bar layout
+  // Bar layout: 4 bars, fixed 1px gaps, bars as wide as will fit (>=1px)
   const int8_t bars = 4;
-  const int8_t gap = 1;
-  const int8_t barW = (int8_t)max<int16_t>(1, (iw - (bars - 1) * gap) / bars);
+  const int16_t gap = 1; // 1px between bars; borders handled via centering
+  int16_t barW = (iw - (bars - 1) * gap) / bars;
+  if (barW < 1) barW = 1;
+  // Keep bars visually thicker than or equal to gap when possible
+  if (barW < 2 && iw >= (bars * 2 + (bars - 1) * gap)) barW = 2;
 
-  // Determine how many bars to fill using quartiles
-  // 0 -> 0 bars; 1..25 -> 1; 26..50 -> 2; 51..75 -> 3; 76..100 -> 4
-  uint8_t clamped = percent <= 100 ? percent : 0;
-  uint8_t barsFilled = (clamped == 0) ? 0 : (uint8_t)((clamped + 24) / 25);
+  const int16_t usedW = (bars * barW) + ((bars - 1) * gap);
+  const int16_t startX = ix + max<int16_t>(0, (iw - usedW) / 2);
+
+  // Map percent to number of filled bars (exact quartiles)
+  uint8_t barsFilled = 0;
+  if (percent <= 100) {
+    barsFilled = (percent == 0) ? 0 : (uint8_t)(1 + ((percent - 1) / 25));
+  }
 
   for (int i = 0; i < bars; i++) {
-    const int16_t bx = ix + i * (barW + gap);
-    const int16_t by = iy;
-    if (i < barsFilled && percent <= 100) {
-      d.fillRect(bx, by, barW, ih);
+    const int16_t bx = startX + i * (barW + gap);
+    if (percent <= 100 && i < barsFilled) {
+      d.fillRect(bx, iy, barW, ih);
     } else {
-      // keep interior empty for unfilled bars
+      // Draw empty bar outlines very faintly only when space allows
+      if (barW >= 2 && ih >= 4) {
+        d.drawRect(bx, iy, barW, ih);
+      }
     }
   }
+}
+
+// Draw a small lightning bolt centered inside the battery body interior.
+inline void drawChargingBolt(SSD1306Wire &d, int16_t x, int16_t y, int16_t bodyW, int16_t bodyH) {
+  // Compute inner area
+  const int16_t ix = x + 1;
+  const int16_t iy = y + 1;
+  const int16_t iw = bodyW - 2;
+  const int16_t ih = bodyH - 2;
+  // Bolt bounds (7x6) centered
+  const int16_t bw = min<int16_t>(7, max<int16_t>(5, iw - 2));
+  const int16_t bh = min<int16_t>(6, max<int16_t>(4, ih - 2));
+  const int16_t bx = ix + (iw - bw) / 2;
+  const int16_t by = iy + (ih - bh) / 2;
+
+  // Draw a zig-zag bolt using lines; coordinates relative to (bx,by)
+  // Shape:
+  //  (0,1)->(2,1)->(1,3)->(4,0)->(3,2)->(5,2)
+  const int16_t x0 = bx + 0, y0 = by + (bh >= 6 ? 1 : 0);
+  const int16_t x1 = bx + (bw >= 6 ? 2 : 1), y1 = y0;
+  const int16_t x2 = bx + (bw >= 6 ? 1 : 1), y2 = by + (bh >= 6 ? 3 : max<int16_t>(2, bh - 2));
+  const int16_t x3 = bx + (bw >= 7 ? 4 : min<int16_t>(3, bw - 1)), y3 = by + 0;
+  const int16_t x4 = bx + (bw >= 7 ? 3 : min<int16_t>(2, bw - 1)), y4 = by + (bh >= 6 ? 2 : 1);
+  const int16_t x5 = bx + (bw >= 7 ? 5 : min<int16_t>(4, bw - 1)), y5 = y4;
+
+  d.drawLine(x0, y0, x1, y1);
+  d.drawLine(x1, y1, x2, y2);
+  d.drawLine(x2, y2, x3, y3);
+  d.drawLine(x3, y3, x4, y4);
+  d.drawLine(x4, y4, x5, y5);
 }
 
 } // namespace Battery

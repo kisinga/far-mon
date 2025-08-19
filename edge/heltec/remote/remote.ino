@@ -58,12 +58,16 @@ static volatile uint8_t g_lastAckSrc = 0;
 // ===== Optional Battery Reading (modularized) =====
 #include "../lib/battery.h"
 static Battery::Config g_battCfg;
-// Optional charge status pin: active-low typical for charger STAT
-// Optional charge status pin: active-low typical for charger STAT
+// Optional charge status pin and polarity from board config
 #ifdef CHARGE_STATUS_PIN
 static const int8_t kChargeStatusPin = CHARGE_STATUS_PIN;
 #else
 static const int8_t kChargeStatusPin = -1;
+#endif
+#ifdef CHARGE_STATUS_ACTIVE_LOW
+static const bool kChargeActiveLow = (CHARGE_STATUS_ACTIVE_LOW != 0);
+#else
+static const bool kChargeActiveLow = true;
 #endif
 
 // Debounced charge detection state (assume active-low STAT: 0 = charging)
@@ -75,7 +79,14 @@ struct ChargeDetectState {
   uint8_t highStreak;
   uint32_t lastChangeMs;
 };
-static ChargeDetectState g_chargeState = { kChargeStatusPin, true, false, 0, 0, 0 };
+static ChargeDetectState g_chargeState = { kChargeStatusPin, kChargeActiveLow, false, 0, 0, 0 };
+// Track GPIO reliability and a voltage-slope fallback detector
+static bool g_chargeGpioSawLow = false;
+static bool g_chargeGpioSawHigh = false;
+static bool g_chargeGpioReliable = false;
+static uint16_t g_lastVBatMv = 0;
+static uint32_t g_lastVBatMs = 0;
+static bool g_fallbackCharging = false;
 
 // ===== LoRa callbacks =====
 static void onLoraData(uint8_t src, const uint8_t *payload, uint8_t len) {
@@ -275,11 +286,33 @@ static void taskDisplay(AppState &state) {
   } else {
     LOG_EVERY_MS(10000, LOGW("batt", "battery read failed"); );
   }
+  // Update slope-based fallback (every >=5s)
+  if (ok) {
+    if (g_lastVBatMs == 0) {
+      g_lastVBatMs = state.nowMs;
+      g_lastVBatMv = vBatMv;
+    } else {
+      uint32_t dt = state.nowMs - g_lastVBatMs;
+      if (dt >= 5000) {
+        int32_t dv = (int32_t)vBatMv - (int32_t)g_lastVBatMv;
+        if (dv >= 10) {
+          g_fallbackCharging = true;
+        } else if (dv <= -10) {
+          g_fallbackCharging = false;
+        }
+        g_lastVBatMs = state.nowMs;
+        g_lastVBatMv = vBatMv;
+      }
+    }
+  }
   
   oled.setBatteryStatus(haveBatt, haveBatt ? bp : 0);
   if (kChargeStatusPin >= 0) {
     const int lv = digitalRead((uint8_t)kChargeStatusPin);
     const bool chargingSample = (g_chargeState.activeLow ? (lv == LOW) : (lv == HIGH));
+    // Observe both levels to consider GPIO reliable
+    if (lv == LOW) g_chargeGpioSawLow = true; else g_chargeGpioSawHigh = true;
+    if (!g_chargeGpioReliable && g_chargeGpioSawLow && g_chargeGpioSawHigh) g_chargeGpioReliable = true;
     // Simple debounce: require 2 consecutive samples to change state
     if (chargingSample) {
       g_chargeState.lowStreak++;
@@ -297,8 +330,14 @@ static void taskDisplay(AppState &state) {
       g_chargeState.lastChangeMs = state.nowMs;
       LOGI("batt", "charging state -> no");
     }
-    oled.setBatteryCharging(g_chargeState.isChargingStable);
-    LOG_EVERY_MS(5000, LOGD("batt", "charge_pin=%d raw=%d stable=%s", (int)kChargeStatusPin, lv, g_chargeState.isChargingStable ? "yes" : "no"); );
+    const bool useGpio = g_chargeGpioReliable;
+    const bool chargingFinal = useGpio ? g_chargeState.isChargingStable : g_fallbackCharging;
+    oled.setBatteryCharging(chargingFinal);
+    LOG_EVERY_MS(5000, LOGD("batt", "charge_pin=%d raw=%d activeLow=%d gpioReliable=%d dvdt=%s final=%s", (int)kChargeStatusPin, lv, (int)g_chargeState.activeLow, (int)useGpio, g_fallbackCharging ? "+" : "-", chargingFinal ? "yes" : "no"); );
+  } else {
+    // No GPIO routed: rely solely on slope-based fallback
+    oled.setBatteryCharging(g_fallbackCharging);
+    LOG_EVERY_MS(5000, LOGD("batt", "no charge pin; dvdt=%s", g_fallbackCharging ? "+" : "-"); );
   }
   oled.tick(state.nowMs);
 }
@@ -344,11 +383,13 @@ void setup() {
   analogSetPinAttenuation(BATTERY_ADC_PIN, ADC_11db); // Explicitly set attenuation for VBAT_ADC
   LOGI("batt", "Heltec V3 config applied (adcPin=1, ctrlPin=37, raw/238.7)");
 
-  // Configure charge status pin (active-low)
+  // Configure charge status pin
   if (kChargeStatusPin >= 0) {
-    pinMode((uint8_t)kChargeStatusPin, INPUT_PULLUP);
+    // Prefer INPUT; optionally enable internal pull-up only if active-low and line floats
+    pinMode((uint8_t)kChargeStatusPin, INPUT);
     const int initLv = digitalRead((uint8_t)kChargeStatusPin);
-    g_chargeState.isChargingStable = (g_chargeState.activeLow ? (initLv == LOW) : (initLv == HIGH));
+    g_chargeState.activeLow = kChargeActiveLow;
+    g_chargeState.isChargingStable = (kChargeActiveLow ? (initLv == LOW) : (initLv == HIGH));
     g_chargeState.lowStreak = g_chargeState.isChargingStable ? 2 : 0;
     g_chargeState.highStreak = g_chargeState.isChargingStable ? 0 : 2;
     g_chargeState.lastChangeMs = millis();
