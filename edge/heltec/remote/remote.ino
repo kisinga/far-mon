@@ -7,6 +7,7 @@
 #include "../lib/scheduler.h"
 #include "../lib/display.h"
 #include "../lib/debug.h"
+#include "../lib/logger.h"
 // Align LoRa RF params with master
 #ifndef LORA_COMM_RF_FREQUENCY
 #define LORA_COMM_RF_FREQUENCY 868000000UL
@@ -246,6 +247,9 @@ void setup() {
   oled.setDeviceId(DEVICE_ID);
   oled.setHomescreenRenderer(renderHome, &appState);
   debugRouter.begin(true, &oled, DEVICE_ID);
+  Logger::begin(true, &oled, DEVICE_ID);
+  Logger::setLevel(Logger::Level::Info);
+  Logger::setVerbose(false);
 
   // Probe I2C/display presence and print diagnostics
   if (ENABLE_OLED_DISPLAY) {
@@ -276,7 +280,8 @@ void setup() {
   lora.begin(LoRaComm::Mode::Slave, selfId);
   lora.setOnDataReceived(onLoraData);
   lora.setOnAckReceived(onLoraAck);
-  lora.setDebug(true, &Serial);
+  lora.setVerbose(false);
+  lora.setLogLevel((uint8_t)Logger::Level::Info);
 
   Serial.print(F("[boot] slave id="));
   Serial.print(selfId);

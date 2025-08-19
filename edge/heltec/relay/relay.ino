@@ -8,6 +8,7 @@
 #include "../lib/scheduler.h"
 #include "../lib/display.h"
 #include "../lib/debug.h"
+#include "../lib/logger.h"
 #include "LoRaWan_APP.h"
 
 // ===== LoRa PHY Configuration =====
@@ -389,6 +390,9 @@ void setup() {
   oled.setDeviceId(DEVICE_ID);
   oled.setHomescreenRenderer(renderHome, &app);
   debugRouter.begin(true, &oled, DEVICE_ID);
+  Logger::begin(true, &oled, DEVICE_ID);
+  Logger::setLevel(Logger::Level::Info);
+  Logger::setVerbose(false);
 
   // LoRa radio init
   Mcu.begin(HELTEC_BOARD, SLOW_CLK_TPYE);

@@ -14,6 +14,7 @@
 // Primary implementation uses Heltec LoRaWAN HAL
 // Requires Heltec ESP32 board support package that provides LoRaWan_APP.h
 #include "LoRaWan_APP.h"
+#include "logger.h"
 
 // Configuration defaults (override by defining before including this header)
 #ifndef LORA_COMM_RF_FREQUENCY
@@ -137,10 +138,9 @@ class LoRaComm {
 
   void setOnDataReceived(OnDataReceived cb) { onDataCb = cb; }
   void setOnAckReceived(OnAckReceived cb) { onAckCb = cb; }
-  void setDebug(bool enabled, Print *out = &Serial) {
-    debugEnabled = enabled;
-    debugOut = out != nullptr ? out : &Serial;
-  }
+  // Logging control (defaults: disabled)
+  void setVerbose(bool verbose) { verboseEnabled = verbose; }
+  void setLogLevel(uint8_t level /*Logger::Level*/) { logLevel = level; }
 
   // Enqueue application DATA. Returns false if outbox is full or payload too large.
   bool sendData(uint8_t destId, const uint8_t *payload, uint8_t length, bool requireAck = true) {
@@ -156,14 +156,7 @@ class LoRaComm {
     m.attempts = 0;
     m.nextAttemptMs = 0;
     m.length = buildFrame(m.buf, FrameType::Data, selfId, destId, m.msgId, payload, length);
-    if (debugEnabled) {
-      debugOut->print(F("[lora] ENQ DATA to="));
-      debugOut->print(destId);
-      debugOut->print(F(" msgId="));
-      debugOut->print(m.msgId);
-      debugOut->print(F(" obx="));
-      debugOut->println(outboxCount);
-    }
+    Logger::printf(Logger::Level::Debug, "lora", "ENQ DATA to=%u msgId=%u obx=%u", destId, m.msgId, outboxCount);
     return true;
   }
 
@@ -179,12 +172,7 @@ class LoRaComm {
     m.attempts = 0;
     m.nextAttemptMs = 0;
     m.length = buildFrame(m.buf, FrameType::Ping, selfId, m.destId, m.msgId, nullptr, 0);
-    if (debugEnabled) {
-      debugOut->print(F("[lora] ENQ PING msgId="));
-      debugOut->print(m.msgId);
-      debugOut->print(F(" obx="));
-      debugOut->println(outboxCount);
-    }
+    Logger::printf(Logger::Level::Debug, "lora", "ENQ PING msgId=%u obx=%u", m.msgId, outboxCount);
     return true;
   }
 
@@ -214,11 +202,8 @@ class LoRaComm {
     if (rxPendingAck && radioState != State::Tx) {
       uint8_t frame[8];
       uint8_t len = buildFrame(frame, FrameType::Ack, selfId, rxAckTargetId, rxAckMessageId, nullptr, 0);
-      if (debugEnabled) {
-        debugOut->print(F("[lora] TX ACK to="));
-        debugOut->print(rxAckTargetId);
-        debugOut->print(F(" msgId="));
-        debugOut->println(rxAckMessageId);
+      if (Logger::isEnabled(verboseEnabled ? Logger::Level::Verbose : (Logger::Level)logLevel)) {
+        Logger::printf(Logger::Level::Debug, "lora", "TX ACK to=%u msgId=%u", rxAckTargetId, rxAckMessageId);
       }
       sendFrame(frame, len);
       rxPendingAck = false;
@@ -236,26 +221,14 @@ class LoRaComm {
           awaitingAckMsgId = m.msgId;
           awaitingAckSrcId = 0; // not used; we match by msgId only
         }
-        if (debugEnabled) {
-          debugOut->print(F("[lora] TX "));
-          debugOut->print(m.type == FrameType::Data ? F("DATA") : F("PING"));
-          debugOut->print(F(" to="));
-          debugOut->print(m.destId);
-          debugOut->print(F(" msgId="));
-          debugOut->print(m.msgId);
-          if (m.requireAck) {
-            debugOut->print(F(" waitAck"));
-          }
-          debugOut->println();
-        }
+        Logger::printf(Logger::Level::Debug, "lora", "TX %s to=%u msgId=%u%s",
+                       (m.type == FrameType::Data ? "DATA" : "PING"), m.destId, m.msgId,
+                       (m.requireAck ? " waitAck" : ""));
         sendFrame(m.buf, m.length);
         return;
       }
-      if (debugEnabled && outboxCount > 0) {
-        debugOut->print(F("[lora] stall rs="));
-        debugOut->print((int)radioState);
-        debugOut->print(F(" obx="));
-        debugOut->println(outboxCount);
+      if (outboxCount > 0) {
+        Logger::printf(Logger::Level::Warn, "lora", "stall rs=%d obx=%u", (int)radioState, outboxCount);
       }
     }
 
@@ -339,8 +312,8 @@ class LoRaComm {
   RadioEvents_t radioEvents;
   State radioState;
 
-  bool debugEnabled = false;
-  Print *debugOut = &Serial;
+  bool verboseEnabled = false;
+  uint8_t logLevel = (uint8_t)Logger::Level::Info;
 
   static void HandleTxDone() {
     if (getInstance() == nullptr) return;
@@ -361,18 +334,14 @@ class LoRaComm {
   void onTxDone() {
     lastRadioActivityMs = millis();
     radioState = State::Idle;
-    if (debugEnabled) {
-      debugOut->println(F("[lora] TX done"));
-    }
+    Logger::printf(Logger::Level::Debug, "lora", "TX done");
     enterRxMode();
   }
 
   void onTxTimeout() {
     lastRadioActivityMs = millis();
     radioState = State::Idle;
-    if (debugEnabled) {
-      debugOut->println(F("[lora] TX timeout"));
-    }
+    Logger::printf(Logger::Level::Warn, "lora", "TX timeout");
     enterRxMode();
   }
 
@@ -416,12 +385,7 @@ class LoRaComm {
       case FrameType::Ack: {
         // ACK for our outgoing message
         if (onAckCb != nullptr) onAckCb(src, msgId);
-        if (debugEnabled) {
-          debugOut->print(F("[lora] RX ACK from="));
-          debugOut->print(src);
-          debugOut->print(F(" msgId="));
-          debugOut->println(msgId);
-        }
+        Logger::printf(Logger::Level::Debug, "lora", "RX ACK from=%u msgId=%u", src, msgId);
         if (mode == Mode::Slave) {
           lastAckOkMs = millis();
         }
@@ -434,12 +398,7 @@ class LoRaComm {
         rxAckTargetId = src;
         rxAckMessageId = msgId;
         rxPendingAck = true;
-        if (debugEnabled) {
-          debugOut->print(F("[lora] RX DATA from="));
-          debugOut->print(src);
-          debugOut->print(F(" len="));
-          debugOut->println(appLen);
-        }
+        Logger::printf(Logger::Level::Info, "lora", "RX DATA from=%u len=%u", src, appLen);
         if (onDataCb != nullptr && appLen > 0) {
           onDataCb(src, payload + kHeaderSize, appLen);
         }
@@ -451,10 +410,7 @@ class LoRaComm {
         rxAckTargetId = src;
         rxAckMessageId = msgId;
         rxPendingAck = true;
-        if (debugEnabled) {
-          debugOut->print(F("[lora] RX PING from="));
-          debugOut->println(src);
-        }
+        Logger::printf(Logger::Level::Info, "lora", "RX PING from=%u", src);
         break;
       }
       default:
@@ -532,10 +488,7 @@ class LoRaComm {
       if (!m.inUse) continue;
       if (m.requireAck && m.attempts >= LORA_COMM_MAX_RETRIES && (int32_t)(millis() - m.nextAttemptMs) >= 0) {
         // drop
-        if (debugEnabled) {
-          debugOut->print(F("[lora] drop msgId="));
-          debugOut->println(m.msgId);
-        }
+        Logger::printf(Logger::Level::Warn, "lora", "drop msgId=%u", m.msgId);
         continue;
       }
       tmp[n++] = m;
