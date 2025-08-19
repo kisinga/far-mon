@@ -111,6 +111,9 @@ class OledDisplay {
     batteryPercent = percent > 100 ? 100 : percent;
   }
 
+  // Optional charging indicator overlay
+  void setBatteryCharging(bool charging) { batteryCharging = charging; }
+
   // Header right area configuration
   void setHeaderRightMode(HeaderRightMode mode) { headerRightMode = mode; }
   void setPeerCount(uint16_t count) { headerPeerCount = count; }
@@ -178,6 +181,16 @@ class OledDisplay {
       // Always draw outline; fill only if valid
       uint8_t pct = batteryStatusValid ? batteryPercent : 255; // 255 => outline only
       Battery::drawIcon(display, battX, battY, 14, 8, pct);
+      if (batteryCharging) {
+        // Draw a tiny bolt overlay centered in the battery icon area
+        const int16_t cx = battX + 7;
+        const int16_t cy = battY + 2;
+        // Simple 5x6 lightning shape
+        display.drawLine(cx, cy, cx + 2, cy);      // top
+        display.drawLine(cx + 2, cy, cx - 1, cy + 4);
+        display.drawLine(cx - 1, cy + 4, cx + 1, cy + 4);
+        display.drawLine(cx + 1, cy + 4, cx - 1, cy + 8);
+      }
     }
 
     drawHeaderRight(display);
@@ -360,6 +373,7 @@ class OledDisplay {
   // Battery status
   bool batteryStatusValid = false;
   uint8_t batteryPercent = 100;
+  bool batteryCharging = false;
 
   // Header configuration
   HeaderRightMode headerRightMode = HeaderRightMode::SignalBars;

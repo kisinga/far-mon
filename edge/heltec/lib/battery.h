@@ -5,31 +5,148 @@
 
 namespace Battery {
 
+// Optional control pin for VBAT measurement gating. If either of these is
+// defined, we'll pull the control pin LOW for a short time before sampling and
+// then return it to INPUT to minimize power/leakage.
+#if defined(BATTERY_CTRL_PIN)
+#define BATTERY__CTRL_PIN BATTERY_CTRL_PIN
+#elif defined(VBAT_CTRL)
+#define BATTERY__CTRL_PIN VBAT_CTRL
+#endif
+
 struct Config {
   // Set adcPin to 0xFF to disable reading (icon will still render outline)
   uint8_t adcPin = 0xFF;
-  // ADC reference voltage (Volts) for mapping raw -> volts
-  float adcReferenceVoltage = 3.30f;
+  // Use calibrated mV read when available (ESP32-S2/S3/ESP32)
+  bool useCalibratedMv = true;
+  // Optional: set ADC attenuation once on first read (11dB recommended for VBAT via divider)
+  bool setAttenuationOnFirstRead = false;
   // Input voltage divider ratio: Vbattery = Vadc * dividerRatio
-  // Set to 1.0 if battery is directly sensed (not recommended)
-  float dividerRatio = 2.00f; // e.g., 100k:100k divider
-  // Battery voltage curve (Volts)
+  // Example: 100k:100k -> 2.0f; set to 1.0 if battery is directly sensed (not recommended)
+  float dividerRatio = 2.00f;
+  // Battery voltage curve bounds (for clamping only)
   float voltageEmpty = 3.30f;
   float voltageFull = 4.20f;
+  // Number of ADC samples for smoothing (min 1). We will drop min/max when n>=4
+  uint8_t samples = 8;
+  // Optional: control pin that enables VBAT sense path (active LOW). -1 to disable.
+  int8_t ctrlPin = -1;
+  // Use Heltec V3 empirical scaling (raw/238.7) instead of calibrated mV + divider
+  bool useHeltecV3Scaling = true;
+  // Internal: one-time attenuation applied
+  bool _attenuationApplied = false;
 };
 
 // Returns true and writes outPercent [0..100] when reading is available.
 // Returns false if adcPin is disabled or any error; caller may render outline-only.
-inline bool readPercent(const Config &cfg, uint8_t &outPercent) {
-  if (cfg.adcPin == 0xFF) return false;
-  int raw = analogRead(cfg.adcPin); // 0..4095
-  if (raw < 0) return false;
-  float vAdc = (float)raw * (cfg.adcReferenceVoltage / 4095.0f);
-  float vBat = vAdc * cfg.dividerRatio;
-  float pct = (vBat - cfg.voltageEmpty) * (100.0f / (cfg.voltageFull - cfg.voltageEmpty));
-  if (pct < 0) pct = 0;
-  if (pct > 100) pct = 100;
-  outPercent = (uint8_t)(pct + 0.5f);
+inline uint16_t readBatteryMilliVolts(Config &cfg, bool &ok) {
+  ok = false;
+  if (cfg.adcPin == 0xFF) return 0;
+  
+  // Optionally enable VBAT sense path via control pin
+  if (cfg.ctrlPin >= 0) {
+    pinMode((uint8_t)cfg.ctrlPin, OUTPUT);
+    digitalWrite((uint8_t)cfg.ctrlPin, LOW);
+    delay(5);
+  }
+
+  // Collect samples (basic smoothing; drop min/max when we have enough)
+  const uint8_t n = cfg.samples < 1 ? 1 : cfg.samples;
+  uint32_t sum = 0;
+  uint16_t vmin = 65535, vmax = 0;
+  for (uint8_t i = 0; i < n; i++) {
+    uint16_t sample = 0;
+    if (cfg.useHeltecV3Scaling) {
+      // Read raw and defer scaling to the end (raw/238.7 -> Volts)
+      int raw = analogRead(cfg.adcPin);
+      if (raw < 0) raw = 0;
+      sample = (uint16_t)raw;
+    } else if (cfg.useCalibratedMv) {
+      sample = (uint16_t)analogReadMilliVolts(cfg.adcPin);
+    } else {
+      int raw = analogRead(cfg.adcPin);
+      if (raw < 0) raw = 0;
+      sample = (uint16_t)((raw * 1100UL) / 4095UL);
+    }
+    sum += sample;
+    if (sample < vmin) vmin = sample;
+    if (sample > vmax) vmax = sample;
+    delayMicroseconds(200);
+  }
+
+  uint32_t adjSum = sum;
+  uint8_t adjN = n;
+  if (n >= 4) {
+    adjSum = sum - vmin - vmax;
+    adjN = n - 2;
+  }
+  if (adjN == 0) adjN = 1;
+  uint32_t vBatMv = 0;
+
+  if (cfg.useHeltecV3Scaling) {
+    // Average raw and apply empirical scaling constant to get Volts
+    const float rawAvg = (float)(adjSum / adjN);
+    const float vBat = rawAvg / 238.7f; // Volts
+    vBatMv = (uint32_t)(vBat * 1000.0f + 0.5f);
+  } else {
+    // One-time attenuation (best-effort; API varies across cores)
+    if (cfg.setAttenuationOnFirstRead && !cfg._attenuationApplied) {
+      #if defined(ESP32)
+      ::analogSetPinAttenuation(cfg.adcPin, ADC_11db);
+      #endif
+      cfg._attenuationApplied = true;
+    }
+    const uint16_t vAdcMv = (uint16_t)(adjSum / adjN);
+    vBatMv = (uint32_t)((float)vAdcMv * cfg.dividerRatio + 0.5f);
+  }
+
+  // Return control pin to input to save power/leakage
+  if (cfg.ctrlPin >= 0) {
+    pinMode((uint8_t)cfg.ctrlPin, INPUT);
+  }
+
+  ok = true;
+  return (uint16_t)(vBatMv > 65535 ? 65535 : vBatMv);
+}
+
+inline uint8_t mapVoltageToPercent(float vBat) {
+  // Tuned curve based on measured discharge profile (ported from heltec_unofficial)
+  static const float min_voltage = 3.04f;
+  static const float max_voltage = 4.26f;
+  static const uint8_t scaled_voltage[100] = {
+    254, 242, 230, 227, 223, 219, 215, 213, 210, 207,
+    206, 202, 202, 200, 200, 199, 198, 198, 196, 196,
+    195, 195, 194, 192, 191, 188, 187, 185, 185, 185,
+    183, 182, 180, 179, 178, 175, 175, 174, 172, 171,
+    170, 169, 168, 166, 166, 165, 165, 164, 161, 161,
+    159, 158, 158, 157, 156, 155, 151, 148, 147, 145,
+    143, 142, 140, 140, 136, 132, 130, 130, 129, 126,
+    125, 124, 121, 120, 118, 116, 115, 114, 112, 112,
+    110, 110, 108, 106, 106, 104, 102, 101, 99, 97,
+    94, 90, 81, 80, 76, 73, 66, 52, 32, 7,
+  };
+  // Compute threshold table step size
+  const float step = (max_voltage - min_voltage) / 256.0f;
+  for (int n = 0; n < 100; n++) {
+    const float threshold = min_voltage + (step * (float)scaled_voltage[n]);
+    if (vBat > threshold) {
+      int p = 100 - n;
+      if (p < 0) p = 0; if (p > 100) p = 100;
+      return (uint8_t)p;
+    }
+  }
+  return 0;
+}
+
+inline bool readPercent(Config &cfg, uint8_t &outPercent) {
+  bool ok = false;
+  uint16_t vBatMv = readBatteryMilliVolts(cfg, ok);
+  if (!ok) return false;
+  float vBat = vBatMv / 1000.0f;
+  // Clamp to configured bounds before mapping
+  if (vBat < cfg.voltageEmpty) vBat = cfg.voltageEmpty;
+  if (vBat > cfg.voltageFull) vBat = cfg.voltageFull;
+  outPercent = mapVoltageToPercent(vBat);
   return true;
 }
 

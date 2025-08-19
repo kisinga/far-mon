@@ -34,6 +34,12 @@ static LoRaComm lora;
 // ===== Optional Battery Reading (modularized) =====
 #include "../lib/battery.h"
 static Battery::Config g_battCfg;
+// Optional charge status pin: active-low typical for charger STAT
+#ifdef CHARGE_STATUS_PIN
+static const int8_t kChargeStatusPin = CHARGE_STATUS_PIN;
+#else
+static const int8_t kChargeStatusPin = -1;
+#endif
 
 // Replace custom radio callbacks with LoRaComm event callbacks
 static void onLoraData(uint8_t src, const uint8_t *payload, uint8_t len) {
@@ -90,7 +96,27 @@ static void taskDisplay(AppState &state) {
   // Battery icon on left
   uint8_t bp = 255;
   bool haveBatt = Battery::readPercent(g_battCfg, bp);
+  
+  // Debug battery readings
+  bool ok = false;
+  uint16_t vBatMv = Battery::readBatteryMilliVolts(g_battCfg, ok);
+  if (ok) {
+    Serial.print(F("[battery] voltage="));
+    Serial.print(vBatMv / 1000.0f, 2);
+    Serial.print(F("V percent="));
+    Serial.println(bp);
+  } else {
+    Serial.println(F("[battery] read failed"));
+  }
+  
   oled.setBatteryStatus(haveBatt, haveBatt ? bp : 0);
+  if (kChargeStatusPin >= 0) {
+    int lv = digitalRead((uint8_t)kChargeStatusPin);
+    // Assume active-low: 0 = charging
+    oled.setBatteryCharging(lv == LOW);
+    Serial.print(F("[battery] charging="));
+    Serial.println(lv == LOW ? "yes" : "no");
+  }
   oled.tick(state.nowMs);
 }
 
@@ -154,9 +180,38 @@ void setup() {
   // Battery config: set adcPin/divider here if available
 #ifdef BATTERY_ADC_PIN
   g_battCfg.adcPin = BATTERY_ADC_PIN;
+  // Recommended: 11dB attenuation applied by helper; set divider per schematic
+  // Example default 100k:100k
+  g_battCfg.dividerRatio = 2.0f;
+  g_battCfg.samples = 12;
+  Serial.print(F("[battery] adcPin="));
+  Serial.print((int)g_battCfg.adcPin);
+  Serial.print(F(" ratio="));
+  Serial.print(g_battCfg.dividerRatio, 3);
+  Serial.print(F(" samples="));
+  Serial.println((int)g_battCfg.samples);
 #else
-  g_battCfg.adcPin = 0xFF; // disabled
+  #if defined(ARDUINO_heltec_wifi_32_lora_V3)
+    // Heltec WiFi LoRa 32 V3 defaults (from board schematic/known examples)
+    g_battCfg.adcPin = 1;      // VBAT_ADC
+    g_battCfg.ctrlPin = 37;    // VBAT_CTRL (active-low enable)
+    g_battCfg.samples = 12;
+    g_battCfg.useHeltecV3Scaling = true; // raw/238.7
+    Serial.println(F("[battery] Heltec V3 defaults applied (adcPin=1, ctrlPin=37, raw/238.7)"));
+  #else
+    g_battCfg.adcPin = 0xFF; // disabled
+    Serial.println(F("[battery] disabled: define BATTERY_ADC_PIN to enable VBAT reading"));
+  #endif
 #endif
+
+  // Configure optional charge status pin (input with pull-up if active-low open-drain)
+  if (kChargeStatusPin >= 0) {
+    pinMode((uint8_t)kChargeStatusPin, INPUT_PULLUP);
+    Serial.print(F("[battery] charge status pin="));
+    Serial.println((int)kChargeStatusPin);
+  } else {
+    Serial.println(F("[battery] no charge status pin configured (define CHARGE_STATUS_PIN if routed)"));
+  }
 
   // LoRa init via LoRaComm
   lora.begin(LoRaComm::Mode::Master, MASTER_ID);

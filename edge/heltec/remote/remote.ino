@@ -57,6 +57,12 @@ static volatile uint8_t g_lastAckSrc = 0;
 // ===== Optional Battery Reading (modularized) =====
 #include "../lib/battery.h"
 static Battery::Config g_battCfg;
+// Optional charge status pin: active-low typical for charger STAT
+#ifdef CHARGE_STATUS_PIN
+static const int8_t kChargeStatusPin = CHARGE_STATUS_PIN;
+#else
+static const int8_t kChargeStatusPin = -1;
+#endif
 
 // ===== LoRa callbacks =====
 static void onLoraData(uint8_t src, const uint8_t *payload, uint8_t len) {
@@ -258,7 +264,27 @@ static void taskDisplay(AppState &state) {
   // Battery icon on left
   uint8_t bp = 255;
   bool haveBatt = Battery::readPercent(g_battCfg, bp);
+  
+  // Debug battery readings
+  bool ok = false;
+  uint16_t vBatMv = Battery::readBatteryMilliVolts(g_battCfg, ok);
+  if (ok) {
+    Serial.print(F("[battery] voltage="));
+    Serial.print(vBatMv / 1000.0f, 2);
+    Serial.print(F("V percent="));
+    Serial.println(bp);
+  } else {
+    Serial.println(F("[battery] read failed"));
+  }
+  
   oled.setBatteryStatus(haveBatt, haveBatt ? bp : 0);
+  if (kChargeStatusPin >= 0) {
+    int lv = digitalRead((uint8_t)kChargeStatusPin);
+    // Assume active-low: 0 = charging
+    oled.setBatteryCharging(lv == LOW);
+    Serial.print(F("[battery] charging="));
+    Serial.println(lv == LOW ? "yes" : "no");
+  }
   oled.tick(state.nowMs);
 }
 
@@ -291,11 +317,25 @@ void setup() {
   Logger::setVerbose(false);
 
   // Battery config for this board
-#ifdef BATTERY_ADC_PIN
-  g_battCfg.adcPin = BATTERY_ADC_PIN;
-#else
-  g_battCfg.adcPin = 0xFF; // disabled
-#endif
+// Force Heltec V3 configuration
+g_battCfg.adcPin = 1;      // VBAT_ADC
+g_battCfg.ctrlPin = 37;    // VBAT_CTRL (active-low enable)
+g_battCfg.samples = 12;    // More samples for stable readings
+g_battCfg.useHeltecV3Scaling = true; // Use empirical scaling factor
+g_battCfg.setAttenuationOnFirstRead = true; // Set 11dB attenuation for higher voltage range
+pinMode(37, OUTPUT);        // Configure VBAT_CTRL pin
+digitalWrite(37, LOW);      // Enable battery voltage sensing
+analogSetPinAttenuation(1, ADC_11db); // Explicitly set attenuation for VBAT_ADC
+Serial.println(F("[battery] Heltec V3 config applied (adcPin=1, ctrlPin=37, raw/238.7)"));
+
+  // Configure optional charge status pin
+  if (kChargeStatusPin >= 0) {
+    pinMode((uint8_t)kChargeStatusPin, INPUT_PULLUP);
+    Serial.print(F("[battery] charge status pin="));
+    Serial.println((int)kChargeStatusPin);
+  } else {
+    Serial.println(F("[battery] no charge status pin configured (define CHARGE_STATUS_PIN if routed)"));
+  }
 
   // Probe I2C/display presence and print diagnostics
   if (ENABLE_OLED_DISPLAY) {
