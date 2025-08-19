@@ -178,18 +178,16 @@ class OledDisplay {
     {
       const int16_t battX = headerLeftWidth + (headerLeftWidth > 0 ? 6 : 0);
       const int16_t battY = 1; // within 10px header
-      // Always draw outline; fill only if valid
-      uint8_t pct = batteryStatusValid ? batteryPercent : 255; // 255 => outline only
-      Battery::drawIcon(display, battX, battY, 14, 8, pct);
+      // When charging, replace bars with outline-only + bolt; otherwise draw bars
+      const bool showBars = batteryStatusValid && !batteryCharging;
+      Battery::drawIcon(display, battX, battY, 16, 8, showBars ? batteryPercent : 255 /*outline-only*/);
       if (batteryCharging) {
-        // Draw a tiny bolt overlay centered in the battery icon area
-        const int16_t cx = battX + 7;
-        const int16_t cy = battY + 2;
-        // Simple 5x6 lightning shape
-        display.drawLine(cx, cy, cx + 2, cy);      // top
-        display.drawLine(cx + 2, cy, cx - 1, cy + 4);
-        display.drawLine(cx - 1, cy + 4, cx + 1, cy + 4);
-        display.drawLine(cx + 1, cy + 4, cx - 1, cy + 8);
+        const int16_t cx = battX + 8;  // center-ish within 16px body
+        const int16_t cy = battY + 1;
+        // Zig-zag bolt using simple lines to avoid clutter
+        display.drawLine(cx,     cy,     cx - 3, cy + 3);
+        display.drawLine(cx - 3, cy + 3, cx + 1, cy + 3);
+        display.drawLine(cx + 1, cy + 3, cx - 2, cy + 7);
       }
     }
 

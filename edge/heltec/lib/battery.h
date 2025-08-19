@@ -152,18 +152,39 @@ inline bool readPercent(Config &cfg, uint8_t &outPercent) {
 
 // Draw a compact battery icon. If percent is >100 (e.g., 255), draws outline only.
 inline void drawIcon(SSD1306Wire &d, int16_t x, int16_t y, int16_t bodyW, int16_t bodyH, uint8_t percent) {
-  if (bodyW < 10) bodyW = 10;
-  if (bodyH < 6) bodyH = 6;
-  const int16_t tipW = 2;
-  // Body outline
+  // Battery outline with tip + 4 discrete bars inside
+  if (bodyW < 12) bodyW = 12;
+  if (bodyH < 8) bodyH = 8;
+
+  // Draw body outline
   d.drawRect(x, y, bodyW, bodyH);
-  // Tip
+  // Draw tip
+  const int16_t tipW = 2;
   d.fillRect(x + bodyW, y + (bodyH / 4), tipW, bodyH - (bodyH / 2));
-  // Fill
-  if (percent <= 100) {
-    int16_t fillW = (int16_t)((bodyW - 2) * percent / 100);
-    if (fillW > 0) {
-      d.fillRect(x + 1, y + 1, fillW, bodyH - 2);
+
+  // Inner drawable area
+  const int16_t ix = x + 1;
+  const int16_t iy = y + 1;
+  const int16_t iw = bodyW - 2;
+  const int16_t ih = bodyH - 2;
+
+  // Compute 4 bar layout
+  const int8_t bars = 4;
+  const int8_t gap = 1;
+  const int8_t barW = (int8_t)max<int16_t>(1, (iw - (bars - 1) * gap) / bars);
+
+  // Determine how many bars to fill using quartiles
+  // 0 -> 0 bars; 1..25 -> 1; 26..50 -> 2; 51..75 -> 3; 76..100 -> 4
+  uint8_t clamped = percent <= 100 ? percent : 0;
+  uint8_t barsFilled = (clamped == 0) ? 0 : (uint8_t)((clamped + 24) / 25);
+
+  for (int i = 0; i < bars; i++) {
+    const int16_t bx = ix + i * (barW + gap);
+    const int16_t by = iy;
+    if (i < barsFilled && percent <= 100) {
+      d.fillRect(bx, by, barW, ih);
+    } else {
+      // keep interior empty for unfilled bars
     }
   }
 }

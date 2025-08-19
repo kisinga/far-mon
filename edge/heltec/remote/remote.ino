@@ -8,6 +8,7 @@
 #include "../lib/display.h"
 #include "../lib/debug.h"
 #include "../lib/logger.h"
+#include "../lib/board_config.h"
 // Align LoRa RF params with master
 #ifndef LORA_COMM_RF_FREQUENCY
 #define LORA_COMM_RF_FREQUENCY 868000000UL
@@ -58,11 +59,23 @@ static volatile uint8_t g_lastAckSrc = 0;
 #include "../lib/battery.h"
 static Battery::Config g_battCfg;
 // Optional charge status pin: active-low typical for charger STAT
+// Optional charge status pin: active-low typical for charger STAT
 #ifdef CHARGE_STATUS_PIN
 static const int8_t kChargeStatusPin = CHARGE_STATUS_PIN;
 #else
 static const int8_t kChargeStatusPin = -1;
 #endif
+
+// Debounced charge detection state (assume active-low STAT: 0 = charging)
+struct ChargeDetectState {
+  int8_t pin;
+  bool activeLow;
+  bool isChargingStable;
+  uint8_t lowStreak;
+  uint8_t highStreak;
+  uint32_t lastChangeMs;
+};
+static ChargeDetectState g_chargeState = { kChargeStatusPin, true, false, 0, 0, 0 };
 
 // ===== LoRa callbacks =====
 static void onLoraData(uint8_t src, const uint8_t *payload, uint8_t len) {
@@ -150,17 +163,11 @@ static void taskReadAnalog(AppState &state) {
       d.drawString(cx, cy + 28, String("V=") + String(s->analogVoltage, 3));
     },
     &appState,
-    // Serial renderer
-    [](Print &out, void *ctx) {
-      AppState *s = static_cast<AppState*>(ctx);
-      out.print(F("analog raw="));
-      out.print(s->analogRaw);
-      out.print(F(" V="));
-      out.print(s->analogVoltage, 3);
-    },
-    &appState,
+    // Serial renderer disabled to reduce verbosity; reports cover this
+    nullptr,
+    nullptr,
     state.nowMs,
-    400
+    5
   );
 }
 
@@ -171,12 +178,7 @@ static void taskReport(AppState &state) {
   }
 
   // Minimal key=value CSV line as per docs (also sent over LoRa)
-  Serial.print(F("id="));
-  Serial.print(DEVICE_ID);
-  Serial.print(F(",ain_raw="));
-  Serial.print(state.analogRaw);
-  Serial.print(F(",ain_v="));
-  Serial.println(state.analogVoltage, 3);
+  Logger::rawf(Logger::Level::Info, "id=%s,ain_raw=%d,ain_v=%.3f", DEVICE_ID, state.analogRaw, state.analogVoltage);
 
   // Consolidated debug: serial + OLED overlay (700ms)
   debugRouter.debug(
@@ -209,7 +211,7 @@ static void taskReport(AppState &state) {
   if (n > 0) {
     const bool queued = lora.sendData(MASTER_NODE_ID, (const uint8_t*)buf, (uint8_t)min(n, (int)sizeof(buf) - 1), /*requireAck=*/true);
     if (!queued) {
-      Serial.println(F("[lora] warn: telemetry not queued (outbox full)"));
+      LOGW("lora", "telemetry not queued (outbox full)");
     }
   }
 
@@ -265,25 +267,38 @@ static void taskDisplay(AppState &state) {
   uint8_t bp = 255;
   bool haveBatt = Battery::readPercent(g_battCfg, bp);
   
-  // Debug battery readings
+  // Debug battery readings (anti-spam)
   bool ok = false;
   uint16_t vBatMv = Battery::readBatteryMilliVolts(g_battCfg, ok);
   if (ok) {
-    Serial.print(F("[battery] voltage="));
-    Serial.print(vBatMv / 1000.0f, 2);
-    Serial.print(F("V percent="));
-    Serial.println(bp);
+    LOG_EVERY_MS(5000, LOGI("batt", "voltage=%.2fV percent=%u", vBatMv / 1000.0f, (unsigned)bp); );
   } else {
-    Serial.println(F("[battery] read failed"));
+    LOG_EVERY_MS(10000, LOGW("batt", "battery read failed"); );
   }
   
   oled.setBatteryStatus(haveBatt, haveBatt ? bp : 0);
   if (kChargeStatusPin >= 0) {
-    int lv = digitalRead((uint8_t)kChargeStatusPin);
-    // Assume active-low: 0 = charging
-    oled.setBatteryCharging(lv == LOW);
-    Serial.print(F("[battery] charging="));
-    Serial.println(lv == LOW ? "yes" : "no");
+    const int lv = digitalRead((uint8_t)kChargeStatusPin);
+    const bool chargingSample = (g_chargeState.activeLow ? (lv == LOW) : (lv == HIGH));
+    // Simple debounce: require 2 consecutive samples to change state
+    if (chargingSample) {
+      g_chargeState.lowStreak++;
+      g_chargeState.highStreak = 0;
+    } else {
+      g_chargeState.highStreak++;
+      g_chargeState.lowStreak = 0;
+    }
+    if (!g_chargeState.isChargingStable && g_chargeState.lowStreak >= 2) {
+      g_chargeState.isChargingStable = true;
+      g_chargeState.lastChangeMs = state.nowMs;
+      LOGI("batt", "charging state -> yes");
+    } else if (g_chargeState.isChargingStable && g_chargeState.highStreak >= 2) {
+      g_chargeState.isChargingStable = false;
+      g_chargeState.lastChangeMs = state.nowMs;
+      LOGI("batt", "charging state -> no");
+    }
+    oled.setBatteryCharging(g_chargeState.isChargingStable);
+    LOG_EVERY_MS(5000, LOGD("batt", "charge_pin=%d raw=%d stable=%s", (int)kChargeStatusPin, lv, g_chargeState.isChargingStable ? "yes" : "no"); );
   }
   oled.tick(state.nowMs);
 }
@@ -298,8 +313,7 @@ static void taskLoRa(AppState &state) {
 void setup() {
   Serial.begin(115200);
   delay(200);
-  Serial.println();
-  Serial.println(F("[boot] Remote node starting..."));
+  Logger::printf(Logger::Level::Info, "boot", "Remote node starting...");
 
   // ADC setup (ESP32)
   // On ESP32, analogRead returns 0..4095 by default. Some pins require selecting attenuation for full range.
@@ -312,29 +326,35 @@ void setup() {
   oled.setHomescreenRenderer(renderHome, &appState);
   oled.setHeaderRightMode(HeaderRightMode::SignalBars);
   debugRouter.begin(true, &oled, DEVICE_ID);
+  // Disable serial output from DebugRouter to avoid duplicate console spam
+  debugRouter.setSerialEnabled(false);
   Logger::begin(true, &oled, DEVICE_ID);
   Logger::setLevel(Logger::Level::Info);
   Logger::setVerbose(false);
 
   // Battery config for this board
-// Force Heltec V3 configuration
-g_battCfg.adcPin = 1;      // VBAT_ADC
-g_battCfg.ctrlPin = 37;    // VBAT_CTRL (active-low enable)
-g_battCfg.samples = 12;    // More samples for stable readings
-g_battCfg.useHeltecV3Scaling = true; // Use empirical scaling factor
-g_battCfg.setAttenuationOnFirstRead = true; // Set 11dB attenuation for higher voltage range
-pinMode(37, OUTPUT);        // Configure VBAT_CTRL pin
-digitalWrite(37, LOW);      // Enable battery voltage sensing
-analogSetPinAttenuation(1, ADC_11db); // Explicitly set attenuation for VBAT_ADC
-Serial.println(F("[battery] Heltec V3 config applied (adcPin=1, ctrlPin=37, raw/238.7)"));
+  // Force Heltec V3 configuration (from board_config.h)
+  g_battCfg.adcPin = BATTERY_ADC_PIN;      // VBAT_ADC
+  g_battCfg.ctrlPin = VBAT_CTRL;           // VBAT_CTRL (active-low enable)
+  g_battCfg.samples = 12;    // More samples for stable readings
+  g_battCfg.useHeltecV3Scaling = true; // Use empirical scaling factor
+  g_battCfg.setAttenuationOnFirstRead = true; // Set 11dB attenuation for higher voltage range
+  g_battCfg.voltageEmpty = 3.04f; // align with mapVoltageToPercent curve
+  g_battCfg.voltageFull = 4.26f;  // align with mapVoltageToPercent curve
+  analogSetPinAttenuation(BATTERY_ADC_PIN, ADC_11db); // Explicitly set attenuation for VBAT_ADC
+  LOGI("batt", "Heltec V3 config applied (adcPin=1, ctrlPin=37, raw/238.7)");
 
-  // Configure optional charge status pin
+  // Configure charge status pin (active-low)
   if (kChargeStatusPin >= 0) {
     pinMode((uint8_t)kChargeStatusPin, INPUT_PULLUP);
-    Serial.print(F("[battery] charge status pin="));
-    Serial.println((int)kChargeStatusPin);
+    const int initLv = digitalRead((uint8_t)kChargeStatusPin);
+    g_chargeState.isChargingStable = (g_chargeState.activeLow ? (initLv == LOW) : (initLv == HIGH));
+    g_chargeState.lowStreak = g_chargeState.isChargingStable ? 2 : 0;
+    g_chargeState.highStreak = g_chargeState.isChargingStable ? 0 : 2;
+    g_chargeState.lastChangeMs = millis();
+    LOGI("batt", "charge status pin=%d init_raw=%d charging=%s", (int)kChargeStatusPin, initLv, g_chargeState.isChargingStable ? "yes" : "no");
   } else {
-    Serial.println(F("[battery] no charge status pin configured (define CHARGE_STATUS_PIN if routed)"));
+    LOGW("batt", "charge status pin not configured");
   }
 
   // Probe I2C/display presence and print diagnostics
@@ -342,12 +362,9 @@ Serial.println(F("[battery] Heltec V3 config applied (adcPin=1, ctrlPin=37, raw/
     // Ensure I2C bus speed is set (optional)
     oled.setI2cClock(500000);
     bool found = oled.probeI2C(OLED_I2C_ADDR);
-    Serial.print(F("[display] probe 0x"));
-    Serial.print(OLED_I2C_ADDR, HEX);
-    Serial.print(F(" found="));
-    Serial.println(found ? F("yes") : F("no"));
+    LOGI("disp", "probe 0x%02X found=%s", OLED_I2C_ADDR, found ? "yes" : "no");
     if (!found) {
-      Serial.println(F("[display] Tips: check Vext power (LOW=ON), SDA/SCL pins, and address (0x3C vs 0x3D)"));
+      LOGW("disp", "Tips: check Vext power (LOW=ON), SDA/SCL pins, and address (0x3C vs 0x3D)");
       oled.i2cScan(Serial);
     }
   }
@@ -359,7 +376,7 @@ Serial.println(F("[battery] Heltec V3 config applied (adcPin=1, ctrlPin=37, raw/
   scheduler.registerTask("heartbeat", taskHeartbeat, HEARTBEAT_INTERVAL_MS);
   scheduler.registerTask("analog_read", taskReadAnalog, ANALOG_READ_INTERVAL_MS);
   scheduler.registerTask("report", taskReport, 100); // internal jitter decides actual cadence
-  scheduler.registerTask("display", taskDisplay, 1000); // ~5 FPS
+  scheduler.registerTask("display", taskDisplay, 200); // ~5 FPS
   scheduler.registerTask("lora", taskLoRa, 50);
 
   // LoRa init (Slave mode)
@@ -373,13 +390,8 @@ Serial.println(F("[battery] Heltec V3 config applied (adcPin=1, ctrlPin=37, raw/
   lora.setVerbose(false);
   lora.setLogLevel((uint8_t)Logger::Level::Info);
 
-  Serial.print(F("[boot] slave id="));
-  Serial.print(selfId);
-  Serial.print(F(" rf="));
-  Serial.print((uint32_t)LORA_COMM_RF_FREQUENCY);
-  Serial.println(F(" Hz"));
-
-  Serial.println(F("[boot] Tasks registered."));
+  LOGI("boot", "slave id=%u rf=%lu Hz", selfId, (unsigned long)LORA_COMM_RF_FREQUENCY);
+  LOGI("boot", "Tasks registered.");
   // Initialize first jittered report time
   const int32_t jitter = (int32_t)((int32_t)REPORT_INTERVAL_MS / 5);
   const int32_t delta = (int32_t)REPORT_INTERVAL_MS + (int32_t)random(-jitter, jitter + 1);

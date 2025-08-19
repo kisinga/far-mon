@@ -121,7 +121,7 @@ class LoRaComm {
         lastRssiDbm(0),
         rxPendingAck(false), rxAckTargetId(0), rxAckMessageId(0),
         outboxCount(0), nextMessageId(1), awaitingAckMsgId(0), awaitingAckSrcId(0),
-        radioState(State::Idle), autoPingEnabled(true) {
+        radioState(State::Idle), autoPingEnabled(true), stallActive(false) {
     memset(peers, 0, sizeof(peers));
   }
 
@@ -241,6 +241,8 @@ class LoRaComm {
           awaitingAckMsgId = m.msgId;
           awaitingAckSrcId = 0; // not used; we match by msgId only
         }
+        statsTx++;
+        if (outboxCount > statsOutboxMax) statsOutboxMax = outboxCount;
         Logger::printf(Logger::Level::Debug, "lora", "TX %s to=%u msgId=%u%s",
                        (m.type == FrameType::Data ? "DATA" : "PING"), m.destId, m.msgId,
                        (m.requireAck ? " waitAck" : ""));
@@ -248,12 +250,25 @@ class LoRaComm {
         return;
       }
       if (outboxCount > 0) {
-        Logger::printf(Logger::Level::Warn, "lora", "stall rs=%d obx=%u", (int)radioState, outboxCount);
+        if (!stallActive) {
+          stallActive = true;
+          Logger::printf(Logger::Level::Warn, "lora", "stall rs=%d obx=%u", (int)radioState, outboxCount);
+        }
+      } else if (stallActive) {
+        stallActive = false;
+        Logger::printf(Logger::Level::Info, "lora", "stall cleared");
       }
     }
 
     // Cleanup: drop expired messages
     compactOutbox();
+
+    // Low-noise periodic stats (Verbose): every 5s
+    LOG_EVERY_MS(5000, {
+      Logger::printf(Logger::Level::Verbose, "lora", "stats tx=%u rx_data=%u rx_ack=%u rx_ping=%u drop=%u obx_max=%u", (unsigned)statsTx, (unsigned)statsRxData, (unsigned)statsRxAck, (unsigned)statsRxPing, (unsigned)statsDropped, (unsigned)statsOutboxMax);
+      statsTx = statsRxData = statsRxAck = statsRxPing = statsDropped = 0;
+      statsOutboxMax = outboxCount;
+    });
   }
 
   // Slave connectivity view
@@ -337,6 +352,16 @@ class LoRaComm {
 
   bool verboseEnabled = false;
   uint8_t logLevel = (uint8_t)Logger::Level::Info;
+  bool stallActive;
+
+  // Aggregated stats for low-noise periodic reporting
+  uint16_t statsRxData = 0;
+  uint16_t statsRxPing = 0;
+  uint16_t statsRxAck = 0;
+  uint16_t statsTx = 0;
+  uint16_t statsTxTimeouts = 0;
+  uint16_t statsDropped = 0;
+  uint8_t statsOutboxMax = 0;
 
   static void HandleTxDone() {
     if (getInstance() == nullptr) return;
@@ -365,6 +390,7 @@ class LoRaComm {
     lastRadioActivityMs = millis();
     radioState = State::Idle;
     Logger::printf(Logger::Level::Warn, "lora", "TX timeout");
+    statsTxTimeouts++;
     enterRxMode();
   }
 
@@ -408,6 +434,7 @@ class LoRaComm {
       case FrameType::Ack: {
         // ACK for our outgoing message
         if (onAckCb != nullptr) onAckCb(src, msgId);
+        statsRxAck++;
         Logger::printf(Logger::Level::Debug, "lora", "RX ACK from=%u msgId=%u", src, msgId);
         if (mode == Mode::Slave) {
           lastAckOkMs = millis();
@@ -423,6 +450,7 @@ class LoRaComm {
           rxAckMessageId = msgId;
           rxPendingAck = true;
         }
+        statsRxData++;
         Logger::printf(Logger::Level::Info, "lora", "RX DATA from=%u len=%u", src, appLen);
         if (onDataCb != nullptr && appLen > 0) {
           onDataCb(src, payload + kHeaderSize, appLen);
@@ -432,7 +460,8 @@ class LoRaComm {
       case FrameType::Ping: {
         // Presence only; master marks peer seen in notePeerSeen above
         // Do not ACK pings to conserve airtime
-        Logger::printf(Logger::Level::Info, "lora", "RX PING from=%u", src);
+        statsRxPing++;
+        Logger::printf(Logger::Level::Debug, "lora", "RX PING from=%u", src);
         break;
       }
       default:
@@ -509,7 +538,8 @@ class LoRaComm {
       OutMsg &m = outbox[i];
       if (!m.inUse) continue;
       if (m.requireAck && m.attempts >= LORA_COMM_MAX_RETRIES && (int32_t)(millis() - m.nextAttemptMs) >= 0) {
-        // drop
+        // drop (count, log once per drop at Warn)
+        statsDropped++;
         Logger::printf(Logger::Level::Warn, "lora", "drop msgId=%u", m.msgId);
         continue;
       }
