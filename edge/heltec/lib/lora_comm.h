@@ -1,9 +1,9 @@
 // Header-only LoRa communication utility for Heltec ESP32 (SX127x)
 // - Reliable send with ACK and retry queue
-// - Receive with auto-ACK
+// - Conditional ACKs (only when requested by sender)
 // - Master/Slave modes
-//   - Master tracks peers by periodic slave pings and marks disconnected on timeout
-//   - Slave tracks connectivity based on ACKs for last transmitted message
+//   - Master tracks peers by any received frame (DATA or PING) and TTLs
+//   - Slave tracks connectivity based on ACKs for recently ACK-requested messages
 // - Non-blocking; call tick(nowMs) regularly (e.g., via scheduler)
 // - Extensible framing; decoupled callbacks for received DATA and ACK events
 
@@ -18,11 +18,11 @@
 
 // Configuration defaults (override by defining before including this header)
 #ifndef LORA_COMM_RF_FREQUENCY
-#define LORA_COMM_RF_FREQUENCY 865000000UL
+#define LORA_COMM_RF_FREQUENCY 868000000UL
 #endif
 
 #ifndef LORA_COMM_TX_POWER_DBM
-#define LORA_COMM_TX_POWER_DBM 5
+#define LORA_COMM_TX_POWER_DBM 14
 #endif
 
 #ifndef LORA_COMM_BANDWIDTH
@@ -77,6 +77,16 @@
 #define LORA_COMM_MASTER_TTL_MS 15000
 #endif
 
+// Optional jittered ping window for slaves. If defined, ping cadence is randomized
+// between MIN and MAX inclusive. Presence is also piggybacked on DATA uplinks.
+#ifndef LORA_COMM_SLAVE_PING_MIN_MS
+#define LORA_COMM_SLAVE_PING_MIN_MS 30000
+#endif
+
+#ifndef LORA_COMM_SLAVE_PING_MAX_MS
+#define LORA_COMM_SLAVE_PING_MAX_MS 120000
+#endif
+
 class LoRaComm {
  public:
   enum class Mode : uint8_t { Master = 0, Slave = 1 };
@@ -103,7 +113,7 @@ class LoRaComm {
         lastRssiDbm(0),
         rxPendingAck(false), rxAckTargetId(0), rxAckMessageId(0),
         outboxCount(0), nextMessageId(1), awaitingAckMsgId(0), awaitingAckSrcId(0),
-        radioState(State::Idle) {
+        radioState(State::Idle), autoPingEnabled(true) {
     memset(peers, 0, sizeof(peers));
   }
 
@@ -141,6 +151,7 @@ class LoRaComm {
   // Logging control (defaults: disabled)
   void setVerbose(bool verbose) { verboseEnabled = verbose; }
   void setLogLevel(uint8_t level /*Logger::Level*/) { logLevel = level; }
+  void setAutoPingEnabled(bool enabled) { autoPingEnabled = enabled; }
 
   // Enqueue application DATA. Returns false if outbox is full or payload too large.
   bool sendData(uint8_t destId, const uint8_t *payload, uint8_t length, bool requireAck = true) {
@@ -155,7 +166,8 @@ class LoRaComm {
     m.requireAck = requireAck;
     m.attempts = 0;
     m.nextAttemptMs = 0;
-    m.length = buildFrame(m.buf, FrameType::Data, selfId, destId, m.msgId, payload, length);
+    const uint8_t flags = requireAck ? kFlagRequireAck : 0;
+    m.length = buildFrame(m.buf, FrameType::Data, selfId, destId, m.msgId, payload, length, flags);
     Logger::printf(Logger::Level::Debug, "lora", "ENQ DATA to=%u msgId=%u obx=%u", destId, m.msgId, outboxCount);
     return true;
   }
@@ -171,7 +183,7 @@ class LoRaComm {
     m.requireAck = false; // Pings are not acked; presence tracked by master
     m.attempts = 0;
     m.nextAttemptMs = 0;
-    m.length = buildFrame(m.buf, FrameType::Ping, selfId, m.destId, m.msgId, nullptr, 0);
+    m.length = buildFrame(m.buf, FrameType::Ping, selfId, m.destId, m.msgId, nullptr, 0, /*flags=*/0);
     Logger::printf(Logger::Level::Debug, "lora", "ENQ PING msgId=%u obx=%u", m.msgId, outboxCount);
     return true;
   }
@@ -181,12 +193,12 @@ class LoRaComm {
     lastNowMs = nowMs;
     Radio.IrqProcess();
 
-    // Automatic slave ping
-    if (mode == Mode::Slave) {
+    // Automatic slave ping (jittered and infrequent)
+    if (mode == Mode::Slave && autoPingEnabled) {
       if ((int32_t)(nowMs - lastPingSentMs) >= 0) {
-        // Use periodic cadence
         (void)sendPing();
-        lastPingSentMs = nowMs + LORA_COMM_SLAVE_PING_INTERVAL_MS;
+        const uint32_t window = (uint32_t)random((long)LORA_COMM_SLAVE_PING_MIN_MS, (long)LORA_COMM_SLAVE_PING_MAX_MS + 1);
+        lastPingSentMs = nowMs + window;
       }
     } else {
       // Update master peer TTLs
@@ -201,7 +213,7 @@ class LoRaComm {
     // Priority 1: send pending ACK as soon as radio is idle
     if (rxPendingAck && radioState != State::Tx) {
       uint8_t frame[8];
-      uint8_t len = buildFrame(frame, FrameType::Ack, selfId, rxAckTargetId, rxAckMessageId, nullptr, 0);
+      uint8_t len = buildFrame(frame, FrameType::Ack, selfId, rxAckTargetId, rxAckMessageId, nullptr, 0, /*flags=*/0);
       if (Logger::isEnabled(verboseEnabled ? Logger::Level::Verbose : (Logger::Level)logLevel)) {
         Logger::printf(Logger::Level::Debug, "lora", "TX ACK to=%u msgId=%u", rxAckTargetId, rxAckMessageId);
       }
@@ -281,6 +293,8 @@ class LoRaComm {
   // Framing: [VER=1][TYPE][FLAGS=0][SRC][DST][MSGID_H][MSGID_L][PAYLOAD...]
   static constexpr uint8_t kProtocolVersion = 1;
   static constexpr uint8_t kHeaderSize = 7;
+  // Flags bitfield
+  static constexpr uint8_t kFlagRequireAck = 0x01; // when set on DATA, receiver must ACK
 
   static LoRaComm *&getInstance() {
     static LoRaComm *inst = nullptr;
@@ -311,6 +325,7 @@ class LoRaComm {
 
   RadioEvents_t radioEvents;
   State radioState;
+  bool autoPingEnabled;
 
   bool verboseEnabled = false;
   uint8_t logLevel = (uint8_t)Logger::Level::Info;
@@ -394,10 +409,12 @@ class LoRaComm {
         break;
       }
       case FrameType::Data: {
-        // Application data; schedule ACK back to source
-        rxAckTargetId = src;
-        rxAckMessageId = msgId;
-        rxPendingAck = true;
+        // Application data; schedule ACK back to source only if requested
+        if ((flags & kFlagRequireAck) != 0) {
+          rxAckTargetId = src;
+          rxAckMessageId = msgId;
+          rxPendingAck = true;
+        }
         Logger::printf(Logger::Level::Info, "lora", "RX DATA from=%u len=%u", src, appLen);
         if (onDataCb != nullptr && appLen > 0) {
           onDataCb(src, payload + kHeaderSize, appLen);
@@ -406,10 +423,7 @@ class LoRaComm {
       }
       case FrameType::Ping: {
         // Presence only; master marks peer seen in notePeerSeen above
-        // By spec, we still ACK every message
-        rxAckTargetId = src;
-        rxAckMessageId = msgId;
-        rxPendingAck = true;
+        // Do not ACK pings to conserve airtime
         Logger::printf(Logger::Level::Info, "lora", "RX PING from=%u", src);
         break;
       }
@@ -437,10 +451,10 @@ class LoRaComm {
   }
 
   uint8_t buildFrame(uint8_t *out, FrameType type, uint8_t src, uint8_t dst,
-                     uint16_t msgId, const uint8_t *payload, uint8_t length) {
+                     uint16_t msgId, const uint8_t *payload, uint8_t length, uint8_t flags = 0) {
     out[0] = kProtocolVersion;
     out[1] = (uint8_t)type;
-    out[2] = 0; // flags reserved
+    out[2] = flags; // flags
     out[3] = src;
     out[4] = dst;
     out[5] = (uint8_t)((msgId >> 8) & 0xFF);

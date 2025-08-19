@@ -43,6 +43,8 @@ struct AppState {
 
   // Heartbeat
   bool heartbeatOn = false;
+  // Reporting jitter scheduler
+  uint32_t nextReportDueMs = 0;
 };
 
 static AppState appState;
@@ -153,7 +155,12 @@ static void taskReadAnalog(AppState &state) {
 }
 
 static void taskReport(AppState &state) {
-  // Minimal key=value CSV line as per docs
+  // Respect jittered schedule to avoid herd effects
+  if ((int32_t)(millis() - state.nextReportDueMs) < 0) {
+    return;
+  }
+
+  // Minimal key=value CSV line as per docs (also sent over LoRa)
   Serial.print(F("id="));
   Serial.print(DEVICE_ID);
   Serial.print(F(",ain_raw="));
@@ -186,13 +193,22 @@ static void taskReport(AppState &state) {
     700
   );
 
-  // LoRa: send a tiny heartbeat message to master (optional in addition to ping)
-  // Send heartbeat "hb" to master; require ACK to update link status
-  const char hb[] = "hb";
-  const bool queued = lora.sendData(MASTER_NODE_ID, (const uint8_t*)hb, (uint8_t)(sizeof(hb) - 1), /*requireAck=*/true);
-  if (!queued) {
-    Serial.println(F("[lora] warn: heartbeat not queued (outbox full)"));
+  // LoRa: send compact telemetry to master; require ACK (also serves as liveness)
+  char buf[48];
+  int n = snprintf(buf, sizeof(buf), "id=%s,r=%d,v=%.3f", DEVICE_ID, state.analogRaw, state.analogVoltage);
+  if (n > 0) {
+    const bool queued = lora.sendData(MASTER_NODE_ID, (const uint8_t*)buf, (uint8_t)min(n, (int)sizeof(buf) - 1), /*requireAck=*/true);
+    if (!queued) {
+      Serial.println(F("[lora] warn: telemetry not queued (outbox full)"));
+    }
   }
+
+  // Schedule next report with ±20% jitter
+  const int32_t jitter = (int32_t)((int32_t)REPORT_INTERVAL_MS / 5); // 20%
+  const int32_t delta = (int32_t)REPORT_INTERVAL_MS + (int32_t)random(-jitter, jitter + 1);
+  // Clamp to minimum 100ms to avoid zero/negative intervals
+  const int32_t safeDelta = (delta < 100) ? 100 : delta;
+  state.nextReportDueMs = millis() + (uint32_t)safeDelta;
 }
 
 // Display homescreen renderer: called when no debug overlay is active
@@ -278,10 +294,13 @@ void setup() {
     }
   }
 
+  // Seed PRNG for jitter
+  randomSeed((uint32_t)millis() ^ ((uint32_t)DEVICE_ID[0] << 8) ^ ((uint32_t)DEVICE_ID[1] << 16));
+
   // Register tasks
   scheduler.registerTask("heartbeat", taskHeartbeat, HEARTBEAT_INTERVAL_MS);
   scheduler.registerTask("analog_read", taskReadAnalog, ANALOG_READ_INTERVAL_MS);
-  scheduler.registerTask("report", taskReport, REPORT_INTERVAL_MS);
+  scheduler.registerTask("report", taskReport, 100); // internal jitter decides actual cadence
   scheduler.registerTask("display", taskDisplay, 1000); // ~5 FPS
   scheduler.registerTask("lora", taskLoRa, 50);
 
@@ -292,6 +311,7 @@ void setup() {
   lora.begin(LoRaComm::Mode::Slave, selfId);
   lora.setOnDataReceived(onLoraData);
   lora.setOnAckReceived(onLoraAck);
+  lora.setAutoPingEnabled(false); // rely on ACKed telemetry for liveness
   lora.setVerbose(false);
   lora.setLogLevel((uint8_t)Logger::Level::Info);
 
@@ -302,6 +322,11 @@ void setup() {
   Serial.println(F(" Hz"));
 
   Serial.println(F("[boot] Tasks registered."));
+  // Initialize first jittered report time
+  const int32_t jitter = (int32_t)((int32_t)REPORT_INTERVAL_MS / 5);
+  const int32_t delta = (int32_t)REPORT_INTERVAL_MS + (int32_t)random(-jitter, jitter + 1);
+  const int32_t safeDelta2 = (delta < 100) ? 100 : delta;
+  appState.nextReportDueMs = millis() + (uint32_t)safeDelta2;
 }
 
 void loop() {
