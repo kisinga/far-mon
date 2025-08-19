@@ -281,9 +281,11 @@ static void taskHeartbeat(AppState &state) {
   debugRouter.debug(
     [](SSD1306Wire &d, void *ctx) {
       (void)ctx;
+      int16_t cx, cy, cw, ch;
+      oled.getContentArea(cx, cy, cw, ch);
       d.setTextAlignment(TEXT_ALIGN_LEFT);
-      d.drawString(0, 14, F("Master"));
-      d.drawString(0, 28, F("Heartbeat"));
+      d.drawString(cx, cy, F("Master"));
+      d.drawString(cx, cy + 14, F("Heartbeat"));
     },
     nullptr,
     [](Print &out, void *ctx) {
@@ -297,34 +299,38 @@ static void taskHeartbeat(AppState &state) {
 }
 
 static void taskDisplay(AppState &state) {
+  // The relay tracks last RSSI from received frames but is always "connected" as master
+  oled.setLoraStatus(true, lastRssiDbm);
   oled.tick(state.nowMs);
 }
 
 static void renderHome(SSD1306Wire &d, void *ctx) {
   (void)ctx;
+  // Fit within computed content area
+  int16_t cx, cy, cw, ch;
+  oled.getContentArea(cx, cy, cw, ch);
   d.setTextAlignment(TEXT_ALIGN_LEFT);
   d.setFont(ArialMT_Plain_10);
-  d.drawString(0, 14, F("Peers"));
+  d.drawString(cx, cy, F("Peers"));
   d.setFont(ArialMT_Plain_16);
   // Count connected peers
   uint8_t count = 0;
   uint32_t now = millis();
   for (uint8_t i = 0; i < MAX_PEERS; i++) {
     if (peers[i].id != 0) {
-      // Maintain connected flag from taskLoRa TTL calc
       bool alive = ((int32_t)(now - peers[i].lastSeenMs) < (int32_t)PEER_TTL_MS);
       peers[i].connected = alive;
       if (alive) count++;
     }
   }
-  d.drawString(0, 26, String(count));
+  d.drawString(cx, cy + 12, String(count));
   d.setFont(ArialMT_Plain_10);
   // Show first two peers
   uint8_t shown = 0;
   for (uint8_t i = 0; i < MAX_PEERS && shown < 2; i++) {
     if (peers[i].id == 0) continue;
     bool alive = (int32_t)(now - peers[i].lastSeenMs) < (int32_t)PEER_TTL_MS;
-    d.drawString(0, 42 + shown * 10, String("id=") + String(peers[i].id) + String(alive ? " ok" : " x"));
+    d.drawString(cx, cy + 28 + shown * 10, String("id=") + String(peers[i].id) + String(alive ? " ok" : " x"));
     shown++;
   }
 }

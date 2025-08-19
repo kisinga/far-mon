@@ -32,6 +32,8 @@ static inline void vextOff() {}
 // Render callback signature: device provides drawing logic
 using RenderCallback = void (*)(SSD1306Wire &display, void *context);
 
+enum class LayoutMode : uint8_t { Half = 0, Full = 1 };
+
 class OledDisplay {
  public:
   OledDisplay()
@@ -88,6 +90,26 @@ class OledDisplay {
     homescreenCtx = ctx;
   }
 
+  void setLayoutMode(LayoutMode mode) { layoutMode = mode; }
+  LayoutMode getLayoutMode() const { return layoutMode; }
+
+  void setLoraStatus(bool connected, int16_t rssiDbm) {
+    loraStatusValid = true;
+    loraConnected = connected;
+    loraRssiDbm = rssiDbm;
+  }
+
+  void clearLoraStatus() {
+    loraStatusValid = false;
+  }
+
+  void getContentArea(int16_t &x, int16_t &y, int16_t &w, int16_t &h) const {
+    x = lastContentX;
+    y = lastContentY;
+    w = lastContentW;
+    h = lastContentH;
+  }
+
   // Optional: for boards where Vext macro is unavailable, provide the pin explicitly
   void setVextPinOverride(int8_t pin) { vextPinOverride = pin; }
 
@@ -130,32 +152,17 @@ class OledDisplay {
       splashActive = false;
     }
 
-    // Header line: device id and uptime (seconds)
+    // Header: device id (left) and LoRa signal (right)
     if (deviceId != nullptr) {
       display.setTextAlignment(TEXT_ALIGN_LEFT);
       display.drawString(0, 0, String("ID:") + deviceId);
     }
-    display.setTextAlignment(TEXT_ALIGN_RIGHT);
-    display.drawString(display.width(), 0, String(nowMs / 1000) + String("s"));
+
+    drawLoraSignal(display);
 
     // Content area
     display.setTextAlignment(TEXT_ALIGN_LEFT);
-    if (debugCb != nullptr && timeNotExpired(nowMs, debugUntilMs)) {
-      display.drawHorizontalLine(0, 10, display.width());
-      debugCb(display, debugCtx);
-    } else if (homescreenCb != nullptr) {
-      display.drawHorizontalLine(0, 10, display.width());
-      homescreenCb(display, homescreenCtx);
-      // Clear debug state once expired
-      if (debugUntilMs != 0 && (int32_t)(nowMs - debugUntilMs) >= 0) {
-        debugCb = nullptr;
-        debugCtx = nullptr;
-        debugUntilMs = 0;
-      }
-    } else {
-      display.drawHorizontalLine(0, 10, display.width());
-      display.drawString(0, 14, F("No homescreen set"));
-    }
+    layoutAndDrawContent(display, nowMs);
 
     display.display();
   }
@@ -194,6 +201,95 @@ class OledDisplay {
     return (int32_t)(nowMs - untilMs) < 0;
   }
 
+  void drawLoraSignal(SSD1306Wire &d) {
+    const int16_t topY = 0;
+    const int16_t headerH = 10;
+    const int8_t bars = 4;
+    const int8_t barWidth = 2;
+    const int8_t barGap = 1;
+    const int8_t maxBarHeight = headerH - 2; // keep small padding
+    const int16_t totalWidth = bars * barWidth + (bars - 1) * barGap;
+    int16_t startX = d.width() - totalWidth;
+    if (!loraStatusValid) {
+      // Draw empty outline bars
+      for (int i = 0; i < bars; i++) {
+        int16_t x = startX + i * (barWidth + barGap);
+        d.drawRect(x, topY + (maxBarHeight - 2), barWidth, 2);
+      }
+      return;
+    }
+
+    uint8_t level = 0;
+    if (loraConnected) {
+      // Map RSSI [-120..-80+] to 1..4
+      int16_t rssi = loraRssiDbm;
+      if (rssi < -115) level = 1;
+      else if (rssi < -105) level = 2;
+      else if (rssi < -95) level = 3;
+      else level = 4;
+    } else {
+      level = 0;
+    }
+
+    for (int i = 0; i < bars; i++) {
+      int16_t x = startX + i * (barWidth + barGap);
+      int8_t h = (int8_t)((i + 1) * maxBarHeight / bars);
+      int16_t y = topY + (maxBarHeight - h);
+      if (i < level) {
+        d.fillRect(x, y, barWidth, h);
+      } else {
+        d.drawRect(x, y, barWidth, h);
+      }
+    }
+  }
+
+  void layoutAndDrawContent(SSD1306Wire &d, uint32_t nowMs) {
+    const int16_t headerSeparatorY = 10;
+    d.drawHorizontalLine(0, headerSeparatorY, d.width());
+
+    // Default content area spans full width below header
+    int16_t contentX = 0;
+    int16_t contentY = headerSeparatorY + 2;
+    int16_t contentW = d.width();
+    int16_t contentH = d.height() - contentY;
+
+    // Half layout: draw logo on the left and shrink content area
+    if (layoutMode == LayoutMode::Half) {
+      // Draw provided small logo on the left (homescreen only)
+      #if defined(logo_small_width) && defined(logo_small_height)
+      const int16_t logoW = logo_small_width;
+      const int16_t logoH = logo_small_height;
+      d.drawXbm(0, contentY, logoW, logoH, logo_small_bits);
+      const int16_t margin = 4;
+      contentX = logoW + margin;
+      // Constrain content to ~3/4 of remaining width for a lighter look
+      int16_t remaining = d.width() - contentX;
+      int16_t threeQuarters = (int16_t)((remaining * 3) / 4);
+      contentW = threeQuarters > 20 ? threeQuarters : remaining; // ensure minimum width
+      #endif
+    }
+
+    // Persist last computed area for renderers to query
+    lastContentX = contentX;
+    lastContentY = contentY;
+    lastContentW = contentW;
+    lastContentH = contentH;
+
+    if (debugCb != nullptr && timeNotExpired(nowMs, debugUntilMs)) {
+      debugCb(d, debugCtx);
+    } else if (homescreenCb != nullptr) {
+      homescreenCb(d, homescreenCtx);
+      // Clear debug state once expired
+      if (debugUntilMs != 0 && (int32_t)(nowMs - debugUntilMs) >= 0) {
+        debugCb = nullptr;
+        debugCtx = nullptr;
+        debugUntilMs = 0;
+      }
+    } else {
+      d.drawString(contentX, contentY + 2, F("No homescreen set"));
+    }
+  }
+
   bool enabled = false;
   const char *deviceId = nullptr;
 
@@ -210,6 +306,19 @@ class OledDisplay {
   RenderCallback debugCb = nullptr;
   void *debugCtx = nullptr;
   uint32_t debugUntilMs = 0;
+
+  // Layout status
+  LayoutMode layoutMode = LayoutMode::Half;
+  // Last computed content area (for renderers to query)
+  int16_t lastContentX = 0;
+  int16_t lastContentY = 12;
+  int16_t lastContentW = 128;
+  int16_t lastContentH = 52;
+
+  // LoRa status for header
+  bool loraStatusValid = false;
+  bool loraConnected = false;
+  int16_t loraRssiDbm = -127;
 
   SSD1306Wire display;
 };

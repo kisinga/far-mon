@@ -67,9 +67,11 @@ static void onLoraAck(uint8_t src, uint16_t msgId) {
   debugRouter.debugFor(
     [](SSD1306Wire &d, void *ctx) {
       uint8_t s = ctx ? *static_cast<uint8_t*>(ctx) : 0;
+      int16_t cx, cy, cw, ch;
+      oled.getContentArea(cx, cy, cw, ch);
       d.setTextAlignment(TEXT_ALIGN_LEFT);
-      d.drawString(0, 14, F("ACK"));
-      d.drawString(0, 28, String("from ") + String(s));
+      d.drawString(cx, cy, F("ACK"));
+      d.drawString(cx, cy + 14, String("from ") + String(s));
     },
     (void*)&g_lastAckSrc,
     [](Print &out, void *ctx) {
@@ -98,9 +100,11 @@ static void taskHeartbeat(AppState &state) {
     // OLED renderer
     [](SSD1306Wire &d, void *ctx) {
       (void)ctx;
+      int16_t cx, cy, cw, ch;
+      oled.getContentArea(cx, cy, cw, ch);
       d.setTextAlignment(TEXT_ALIGN_LEFT);
-      d.drawString(0, 14, F("Heartbeat"));
-      d.drawString(0, 28, F("Toggled"));
+      d.drawString(cx, cy, F("Heartbeat"));
+      d.drawString(cx, cy + 14, F("Toggled"));
     },
     nullptr,
     // Serial renderer
@@ -126,10 +130,12 @@ static void taskReadAnalog(AppState &state) {
     // OLED renderer
     [](SSD1306Wire &d, void *ctx) {
       AppState *s = static_cast<AppState*>(ctx);
+      int16_t cx, cy, cw, ch;
+      oled.getContentArea(cx, cy, cw, ch);
       d.setTextAlignment(TEXT_ALIGN_LEFT);
-      d.drawString(0, 14, F("Analog"));
-      d.drawString(0, 28, String("raw=") + String(s->analogRaw));
-      d.drawString(0, 42, String("V=") + String(s->analogVoltage, 3));
+      d.drawString(cx, cy, F("Analog"));
+      d.drawString(cx, cy + 14, String("raw=") + String(s->analogRaw));
+      d.drawString(cx, cy + 28, String("V=") + String(s->analogVoltage, 3));
     },
     &appState,
     // Serial renderer
@@ -160,9 +166,11 @@ static void taskReport(AppState &state) {
     // OLED renderer
     [](SSD1306Wire &d, void *ctx) {
       (void)ctx;
+      int16_t cx, cy, cw, ch;
+      oled.getContentArea(cx, cy, cw, ch);
       d.setTextAlignment(TEXT_ALIGN_LEFT);
-      d.drawString(0, 14, F("Report"));
-      d.drawString(0, 28, F("Sent"));
+      d.drawString(cx, cy, F("Report"));
+      d.drawString(cx, cy + 14, F("Sent"));
     },
     nullptr,
     // Serial renderer
@@ -190,37 +198,41 @@ static void taskReport(AppState &state) {
 // Display homescreen renderer: called when no debug overlay is active
 static void renderHome(SSD1306Wire &d, void *ctx) {
   AppState *s = static_cast<AppState*>(ctx);
-  // Header line is handled in display tick; draw content area from y=14
+  // Determine content area from layout manager
+  int16_t cx, cy, cw, ch;
+  oled.getContentArea(cx, cy, cw, ch);
 
-  // Column layout
-  const int16_t leftX = 0;
-  const int16_t rightX = d.width();
+  // Column layout within content area
+  const int16_t leftX = cx;
+  const int16_t rightX = cx + cw;
 
   // Left: Analog card
   d.setTextAlignment(TEXT_ALIGN_LEFT);
   d.setFont(ArialMT_Plain_10);
-  d.drawString(leftX, 14, F("Analog"));
+  d.drawString(leftX, cy, F("Analog"));
   d.setFont(ArialMT_Plain_16);
-  d.drawString(leftX, 26, String(s->analogVoltage, 3) + String(" V"));
+  d.drawString(leftX, cy + 12, String(s->analogVoltage, 3) + String(" V"));
   d.setFont(ArialMT_Plain_10);
-  d.drawString(leftX, 44, String("raw ") + String(s->analogRaw));
+  d.drawString(leftX, cy + 30, String("raw ") + String(s->analogRaw));
 
   // Right: Status card
   d.setTextAlignment(TEXT_ALIGN_RIGHT);
   d.setFont(ArialMT_Plain_10);
-  d.drawString(rightX, 14, F("Status"));
+  d.drawString(rightX, cy, F("Status"));
   d.setFont(ArialMT_Plain_16);
-  d.drawString(rightX, 26, s->heartbeatOn ? F("HB ON") : F("HB OFF"));
+  d.drawString(rightX, cy + 12, s->heartbeatOn ? F("HB ON") : F("HB OFF"));
   d.setFont(ArialMT_Plain_10);
   const bool linkOk = lora.isConnected();
   const int16_t rssi = lora.getLastRssiDbm();
-  d.drawString(rightX, 44, linkOk ? F("LNK OK") : F("LNK --"));
+  d.drawString(rightX, cy + 30, linkOk ? F("LNK OK") : F("LNK --"));
   if (linkOk) {
-    d.drawString(rightX, 54, String(rssi) + String(" dBm"));
+    d.drawString(rightX, cy + 40, String(rssi) + String(" dBm"));
   }
 }
 
 static void taskDisplay(AppState &state) {
+  // Update header LoRa status
+  oled.setLoraStatus(lora.isConnected(), lora.getLastRssiDbm());
   oled.tick(state.nowMs);
 }
 
