@@ -31,6 +31,10 @@ static OledDisplay oled;
 static DebugRouter debugRouter;
 static LoRaComm lora;
 
+// ===== Optional Battery Reading (modularized) =====
+#include "../lib/battery.h"
+static Battery::Config g_battCfg;
+
 // Replace custom radio callbacks with LoRaComm event callbacks
 static void onLoraData(uint8_t src, const uint8_t *payload, uint8_t len) {
   Serial.print(F("[rx] DATA from "));
@@ -70,7 +74,23 @@ static void taskHeartbeat(AppState &state) {
 }
 
 static void taskDisplay(AppState &state) {
+  // Header right: show peer count (master)
+  size_t connectedCount = 0;
+  for (size_t i = 0;; i++) {
+    LoRaComm::PeerInfo p{};
+    if (!lora.getPeerByIndex(i, p)) break;
+    if (p.connected) connectedCount++;
+  }
+  oled.setHeaderRightMode(HeaderRightMode::PeerCount);
+  oled.setPeerCount((uint16_t)connectedCount);
+
+  // LoRa status still provided to allow other renderers to use RSSI if needed
   oled.setLoraStatus(true, lora.getLastRssiDbm());
+
+  // Battery icon on left
+  uint8_t bp = 255;
+  bool haveBatt = Battery::readPercent(g_battCfg, bp);
+  oled.setBatteryStatus(haveBatt, haveBatt ? bp : 0);
   oled.tick(state.nowMs);
 }
 
@@ -125,10 +145,18 @@ void setup() {
   oled.begin(true);
   oled.setDeviceId(DEVICE_ID);
   oled.setHomescreenRenderer(renderHome, &app);
+  oled.setHeaderRightMode(HeaderRightMode::PeerCount);
   debugRouter.begin(true, &oled, DEVICE_ID);
   Logger::begin(true, &oled, DEVICE_ID);
   Logger::setLevel(Logger::Level::Info);
   Logger::setVerbose(false);
+
+  // Battery config: set adcPin/divider here if available
+#ifdef BATTERY_ADC_PIN
+  g_battCfg.adcPin = BATTERY_ADC_PIN;
+#else
+  g_battCfg.adcPin = 0xFF; // disabled
+#endif
 
   // LoRa init via LoRaComm
   lora.begin(LoRaComm::Mode::Master, MASTER_ID);

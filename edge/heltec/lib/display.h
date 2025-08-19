@@ -9,6 +9,7 @@
 #include <Wire.h>
 #include "HT_SSD1306Wire.h"
 #include "logo.h"
+#include "battery.h"
 
 #ifndef OLED_I2C_ADDR
 #define OLED_I2C_ADDR 0x3C
@@ -33,6 +34,7 @@ static inline void vextOff() {}
 using RenderCallback = void (*)(SSD1306Wire &display, void *context);
 
 enum class LayoutMode : uint8_t { Half = 0, Full = 1 };
+enum class HeaderRightMode : uint8_t { SignalBars = 0, PeerCount = 1 };
 
 class OledDisplay {
  public:
@@ -103,6 +105,16 @@ class OledDisplay {
     loraStatusValid = false;
   }
 
+  // Battery indicator (0..100%). If not set, icon is hidden.
+  void setBatteryStatus(bool valid, uint8_t percent) {
+    batteryStatusValid = valid;
+    batteryPercent = percent > 100 ? 100 : percent;
+  }
+
+  // Header right area configuration
+  void setHeaderRightMode(HeaderRightMode mode) { headerRightMode = mode; }
+  void setPeerCount(uint16_t count) { headerPeerCount = count; }
+
   void getContentArea(int16_t &x, int16_t &y, int16_t &w, int16_t &h) const {
     x = lastContentX;
     y = lastContentY;
@@ -152,13 +164,23 @@ class OledDisplay {
       splashActive = false;
     }
 
-    // Header: device id (left) and LoRa signal (right)
+    // Header: device id (left) + optional battery icon; right area is configurable
+    int16_t headerLeftWidth = 0;
+    display.setTextAlignment(TEXT_ALIGN_LEFT);
     if (deviceId != nullptr) {
-      display.setTextAlignment(TEXT_ALIGN_LEFT);
-      display.drawString(0, 0, String("ID:") + deviceId);
+      String idText = String("ID:") + deviceId;
+      display.drawString(0, 0, idText);
+      headerLeftWidth = display.getStringWidth(idText);
+    }
+    {
+      const int16_t battX = headerLeftWidth + (headerLeftWidth > 0 ? 6 : 0);
+      const int16_t battY = 1; // within 10px header
+      // Always draw outline; fill only if valid
+      uint8_t pct = batteryStatusValid ? batteryPercent : 255; // 255 => outline only
+      Battery::drawIcon(display, battX, battY, 14, 8, pct);
     }
 
-    drawLoraSignal(display);
+    drawHeaderRight(display);
 
     // Content area
     display.setTextAlignment(TEXT_ALIGN_LEFT);
@@ -243,6 +265,21 @@ class OledDisplay {
     }
   }
 
+  void drawPeersCount(SSD1306Wire &d) {
+    d.setTextAlignment(TEXT_ALIGN_RIGHT);
+    d.drawString(d.width(), 0, String("P:") + String((uint32_t)headerPeerCount));
+  }
+
+  void drawHeaderRight(SSD1306Wire &d) {
+    if (headerRightMode == HeaderRightMode::SignalBars) {
+      drawLoraSignal(d);
+    } else {
+      drawPeersCount(d);
+    }
+  }
+
+  // Battery drawing handled by Battery::drawIcon
+
   void layoutAndDrawContent(SSD1306Wire &d, uint32_t nowMs) {
     const int16_t headerSeparatorY = 10;
     d.drawHorizontalLine(0, headerSeparatorY, d.width());
@@ -319,6 +356,14 @@ class OledDisplay {
   bool loraStatusValid = false;
   bool loraConnected = false;
   int16_t loraRssiDbm = -127;
+
+  // Battery status
+  bool batteryStatusValid = false;
+  uint8_t batteryPercent = 100;
+
+  // Header configuration
+  HeaderRightMode headerRightMode = HeaderRightMode::SignalBars;
+  uint16_t headerPeerCount = 0;
 
   SSD1306Wire display;
 };

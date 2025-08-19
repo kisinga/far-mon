@@ -17,8 +17,16 @@
 #include "logger.h"
 
 // Configuration defaults (override by defining before including this header)
+// Region selection (override by defining LORA_COMM_RF_FREQUENCY or a region macro before include)
 #ifndef LORA_COMM_RF_FREQUENCY
-#define LORA_COMM_RF_FREQUENCY 868000000UL
+  #if defined(LORA_REGION_US915)
+    #define LORA_COMM_RF_FREQUENCY 915000000UL
+  #elif defined(LORA_REGION_EU868)
+    #define LORA_COMM_RF_FREQUENCY 868000000UL
+  #else
+    // Default to EU868 if no explicit region selected
+    #define LORA_COMM_RF_FREQUENCY 868000000UL
+  #endif
 #endif
 
 #ifndef LORA_COMM_TX_POWER_DBM

@@ -54,6 +54,10 @@ static DebugRouter debugRouter;
 static LoRaComm lora;
 static volatile uint8_t g_lastAckSrc = 0;
 
+// ===== Optional Battery Reading (modularized) =====
+#include "../lib/battery.h"
+static Battery::Config g_battCfg;
+
 // ===== LoRa callbacks =====
 static void onLoraData(uint8_t src, const uint8_t *payload, uint8_t len) {
   (void)src;
@@ -249,6 +253,12 @@ static void renderHome(SSD1306Wire &d, void *ctx) {
 static void taskDisplay(AppState &state) {
   // Update header LoRa status
   oled.setLoraStatus(lora.isConnected(), lora.getLastRssiDbm());
+  // Slave shows signal bars on right
+  oled.setHeaderRightMode(HeaderRightMode::SignalBars);
+  // Battery icon on left
+  uint8_t bp = 255;
+  bool haveBatt = Battery::readPercent(g_battCfg, bp);
+  oled.setBatteryStatus(haveBatt, haveBatt ? bp : 0);
   oled.tick(state.nowMs);
 }
 
@@ -274,10 +284,18 @@ void setup() {
   oled.begin(ENABLE_OLED_DISPLAY);
   oled.setDeviceId(DEVICE_ID);
   oled.setHomescreenRenderer(renderHome, &appState);
+  oled.setHeaderRightMode(HeaderRightMode::SignalBars);
   debugRouter.begin(true, &oled, DEVICE_ID);
   Logger::begin(true, &oled, DEVICE_ID);
   Logger::setLevel(Logger::Level::Info);
   Logger::setVerbose(false);
+
+  // Battery config for this board
+#ifdef BATTERY_ADC_PIN
+  g_battCfg.adcPin = BATTERY_ADC_PIN;
+#else
+  g_battCfg.adcPin = 0xFF; // disabled
+#endif
 
   // Probe I2C/display presence and print diagnostics
   if (ENABLE_OLED_DISPLAY) {
