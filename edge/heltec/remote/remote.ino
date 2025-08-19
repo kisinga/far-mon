@@ -7,12 +7,21 @@
 #include "../lib/scheduler.h"
 #include "../lib/display.h"
 #include "../lib/debug.h"
+// Align LoRa RF params with master
+#ifndef LORA_COMM_RF_FREQUENCY
+#define LORA_COMM_RF_FREQUENCY 868000000UL
+#endif
+#ifndef LORA_COMM_TX_POWER_DBM
+#define LORA_COMM_TX_POWER_DBM 14
+#endif
+#include "../lib/lora_comm.h"
 
 // ===== Configuration =====
 // Change to any valid ADC-capable pin on your board. Heltec LoRa 32 commonly uses GPIO34.
 static const uint8_t ANALOG_INPUT_PIN = 34; // ADC1 channel
 static const float ANALOG_REFERENCE_VOLTAGE = 3.30f; // Volts
 static const bool ENABLE_OLED_DISPLAY = true; // Set false to disable screen usage at runtime
+static const uint8_t MASTER_NODE_ID = 1; // Destination for data frames
 
 // Device identity (1-byte id encoded as two ASCII digits to match docs)
 static const char DEVICE_ID[] = "03";
@@ -39,6 +48,38 @@ static AppState appState;
 static TaskScheduler<AppState, 8> scheduler;
 static OledDisplay oled;
 static DebugRouter debugRouter;
+static LoRaComm lora;
+static volatile uint8_t g_lastAckSrc = 0;
+
+// ===== LoRa callbacks =====
+static void onLoraData(uint8_t src, const uint8_t *payload, uint8_t len) {
+  (void)src;
+  (void)payload;
+  (void)len;
+  // Keep minimal; data ACK is auto-handled by lora_comm
+}
+
+static void onLoraAck(uint8_t src, uint16_t msgId) {
+  (void)msgId;
+  g_lastAckSrc = src;
+  // Brief debug overlay to show connectivity
+  debugRouter.debugFor(
+    [](SSD1306Wire &d, void *ctx) {
+      uint8_t s = ctx ? *static_cast<uint8_t*>(ctx) : 0;
+      d.setTextAlignment(TEXT_ALIGN_LEFT);
+      d.drawString(0, 14, F("ACK"));
+      d.drawString(0, 28, String("from ") + String(s));
+    },
+    (void*)&g_lastAckSrc,
+    [](Print &out, void *ctx) {
+      uint8_t s = ctx ? *static_cast<uint8_t*>(ctx) : 0;
+      out.print(F("ack from="));
+      out.print(s);
+    },
+    (void*)&g_lastAckSrc,
+    600
+  );
+}
 
 // ===== Utilities =====
 static float convertAdcToVolts(int adcRaw) {
@@ -135,6 +176,14 @@ static void taskReport(AppState &state) {
     state.nowMs,
     700
   );
+
+  // LoRa: send a tiny heartbeat message to master (optional in addition to ping)
+  // Send heartbeat "hb" to master; require ACK to update link status
+  const char hb[] = "hb";
+  const bool queued = lora.sendData(MASTER_NODE_ID, (const uint8_t*)hb, (uint8_t)(sizeof(hb) - 1), /*requireAck=*/true);
+  if (!queued) {
+    Serial.println(F("[lora] warn: heartbeat not queued (outbox full)"));
+  }
 }
 
 // Display homescreen renderer: called when no debug overlay is active
@@ -161,10 +210,23 @@ static void renderHome(SSD1306Wire &d, void *ctx) {
   d.drawString(rightX, 14, F("Status"));
   d.setFont(ArialMT_Plain_16);
   d.drawString(rightX, 26, s->heartbeatOn ? F("HB ON") : F("HB OFF"));
+  d.setFont(ArialMT_Plain_10);
+  const bool linkOk = lora.isConnected();
+  const int16_t rssi = lora.getLastRssiDbm();
+  d.drawString(rightX, 44, linkOk ? F("LNK OK") : F("LNK --"));
+  if (linkOk) {
+    d.drawString(rightX, 54, String(rssi) + String(" dBm"));
+  }
 }
 
 static void taskDisplay(AppState &state) {
   oled.tick(state.nowMs);
+}
+
+static void taskLoRa(AppState &state) {
+  lora.tick(state.nowMs);
+  // Service event-loop more aggressively to avoid missing interrupts
+  Radio.IrqProcess();
 }
 
 // ===== Arduino Lifecycle =====
@@ -205,6 +267,22 @@ void setup() {
   scheduler.registerTask("analog_read", taskReadAnalog, ANALOG_READ_INTERVAL_MS);
   scheduler.registerTask("report", taskReport, REPORT_INTERVAL_MS);
   scheduler.registerTask("display", taskDisplay, 1000); // ~5 FPS
+  scheduler.registerTask("lora", taskLoRa, 50);
+
+  // LoRa init (Slave mode)
+  // Parse DEVICE_ID to numeric self id (e.g., "03" -> 3)
+  uint8_t selfId = (uint8_t)strtoul(DEVICE_ID, nullptr, 10);
+  if (selfId == 0) selfId = 1; // avoid zero
+  lora.begin(LoRaComm::Mode::Slave, selfId);
+  lora.setOnDataReceived(onLoraData);
+  lora.setOnAckReceived(onLoraAck);
+  lora.setDebug(true, &Serial);
+
+  Serial.print(F("[boot] slave id="));
+  Serial.print(selfId);
+  Serial.print(F(" rf="));
+  Serial.print((uint32_t)LORA_COMM_RF_FREQUENCY);
+  Serial.println(F(" Hz"));
 
   Serial.println(F("[boot] Tasks registered."));
 }
