@@ -172,6 +172,8 @@ public:
       _chargeState.lowStreak = _chargeState.isChargingStable ? 2 : 0;
       _chargeState.highStreak = _chargeState.isChargingStable ? 0 : 2;
       _chargeState.lastChangeMs = nowMs;
+      // Treat GPIO as reliable immediately when configured; still debounce state changes
+      _chargeGpioReliable = true;
     }
   }
 
@@ -202,9 +204,8 @@ public:
     if (_chargeState.pin >= 0) {
       const int lv = digitalRead((uint8_t)_chargeState.pin);
       const bool chargingSample = (_chargeState.activeLow ? (lv == LOW) : (lv == HIGH));
-      // Observe both levels to consider GPIO reliable
+      // Track level observations (diagnostic); reliability already enabled at init
       if (lv == LOW) _chargeGpioSawLow = true; else _chargeGpioSawHigh = true;
-      if (!_chargeGpioReliable && _chargeGpioSawLow && _chargeGpioSawHigh) _chargeGpioReliable = true;
       // Simple debounce: require 2 consecutive samples to change state
       if (chargingSample) {
         _chargeState.lowStreak++;

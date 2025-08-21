@@ -107,7 +107,16 @@ class OledDisplay {
   // Battery indicator (0..100%). If not set, icon is hidden.
   void setBatteryStatus(bool valid, uint8_t percent) {
     batteryStatusValid = valid;
-    batteryPercent = percent > 100 ? 100 : percent;
+    const uint8_t clamped = percent > 100 ? 100 : percent;
+    if (!batteryFilterInitialized) {
+      batteryPercentFiltered = (float)clamped;
+      batteryFilterInitialized = true;
+    } else {
+      // Low-pass filter to stabilize UI bars and reduce flicker
+      const float alpha = 0.30f; // weight of new sample
+      batteryPercentFiltered = (1.0f - alpha) * batteryPercentFiltered + alpha * (float)clamped;
+    }
+    batteryPercent = clamped;
   }
 
   // Optional charging indicator overlay
@@ -179,7 +188,8 @@ class OledDisplay {
       const int16_t battY = 1; // within 10px header
       // When charging, replace bars with outline-only + bolt; otherwise draw bars
       const bool showBars = batteryStatusValid && !batteryCharging;
-      drawBatteryIcon(display, battX, battY, 16, 8, showBars ? batteryPercent : 255 /*outline-only*/);
+      const uint8_t percentToDraw = (uint8_t)(batteryPercentFiltered + 0.5f);
+      drawBatteryIcon(display, battX, battY, 16, 8, showBars ? percentToDraw : 255 /*outline-only*/);
       if (batteryCharging) {
         drawChargingBolt(display, battX, battY, 16, 8);
       }
@@ -315,21 +325,26 @@ class OledDisplay {
     const int16_t usedW = (bars * barW) + ((bars - 1) * gap);
     const int16_t startX = ix + max<int16_t>(0, (iw - usedW) / 2);
 
-    // Map percent to number of filled bars (exact quartiles)
+    // Map percent to number of filled bars (uniform quartiles, 0..4)
     uint8_t barsFilled = 0;
     if (percent <= 100) {
-      barsFilled = (percent == 0) ? 0 : (uint8_t)(1 + ((percent - 1) / 25));
+      if (percent == 0) {
+        barsFilled = 0;
+      } else if (percent <= 25) {
+        barsFilled = 1;
+      } else if (percent <= 50) {
+        barsFilled = 2;
+      } else if (percent <= 75) {
+        barsFilled = 3;
+      } else {
+        barsFilled = 4;
+      }
     }
 
     for (int i = 0; i < bars; i++) {
       const int16_t bx = startX + i * (barW + gap);
       if (percent <= 100 && i < barsFilled) {
         d.fillRect(bx, iy, barW, ih);
-      } else {
-        // Draw empty bar outlines very faintly only when space allows
-        if (barW >= 2 && ih >= 4) {
-          d.drawRect(bx, iy, barW, ih);
-        }
       }
     }
   }
@@ -445,6 +460,8 @@ class OledDisplay {
   bool batteryStatusValid = false;
   uint8_t batteryPercent = 100;
   bool batteryCharging = false;
+  bool batteryFilterInitialized = false;
+  float batteryPercentFiltered = 0.0f;
 
   // Header configuration
   HeaderRightMode headerRightMode = HeaderRightMode::SignalBars;

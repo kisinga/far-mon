@@ -7,4 +7,4 @@
 // If your board does not route STAT to the MCU, set to -1 to disable.
 #define CHARGE_STATUS_PIN -1
 // Polarity: typical charger STAT pins are active-low (LOW = charging)
-#define CHARGE_STATUS_ACTIVE_LOW 0
+#define CHARGE_STATUS_ACTIVE_LOW 1
