@@ -161,12 +161,7 @@ public:
   uint16_t _lastVBatMv = 0;
   uint32_t _lastVBatMs = 0;
   bool _fallbackCharging = false;
-  // History-based fallback detection for smoother/latched behavior
-  static const uint8_t kHistSize = 6; // up to ~12-30s depending on sample cadence
-  uint16_t _vbatHistory[kHistSize] = {0};
-  uint32_t _timeHistory[kHistSize] = {0};
-  uint8_t _histCount = 0;
-  uint8_t _histHead = 0; // points to next insert index
+  // Latch keeps UI bolt visible during CV/plateau
   uint32_t _chargingLatchedUntilMs = 0;
 
   void initChargeDetection(int8_t pin, bool activeLow, uint32_t nowMs) {
@@ -188,42 +183,27 @@ public:
     bool ok = false;
     uint16_t vBatMv = readBatteryMilliVolts(ok);
 
-    // Update slope-based fallback (every >=2s)
+    // Update slope-based fallback (grug: 1s check, simple thresholds, latch)
     if (ok) {
       if (_lastVBatMs == 0) {
         _lastVBatMs = nowMs;
         _lastVBatMv = vBatMv;
       } else {
         uint32_t dt = nowMs - _lastVBatMs;
-        if (dt >= 2000) {
-          // Push into ring buffer
-          _vbatHistory[_histHead] = vBatMv;
-          _timeHistory[_histHead] = nowMs;
-          if (_histCount < kHistSize) _histCount++;
-          _histHead = (uint8_t)((_histHead + 1) % kHistSize);
-
-          // Evaluate slope from oldest to newest
-          if (_histCount >= 2) {
-            const uint8_t newestIdx = (uint8_t)((_histHead + kHistSize - 1) % kHistSize);
-            const uint8_t oldestIdx = (uint8_t)((_histHead + kHistSize - _histCount) % kHistSize);
-            const int32_t dv = (int32_t)_vbatHistory[newestIdx] - (int32_t)_vbatHistory[oldestIdx];
-            const uint32_t dtWin = _timeHistory[newestIdx] - _timeHistory[oldestIdx];
-            // Thresholds: >=6mV rise over window indicates likely charging
-            if (dtWin >= 4000 && dv >= 6) {
-              _fallbackCharging = true;
-              // Latch for 2 minutes to keep UI bolt on during CV phase/plateau
-              _chargingLatchedUntilMs = nowMs + 120000UL;
-            } else if (dtWin >= 4000 && dv <= -8) {
-              // Clear only when we see a definite drop and latch expired
-              if ((int32_t)(nowMs - _chargingLatchedUntilMs) > 0) {
-                _fallbackCharging = false;
-              }
-            } else {
-              // Maintain latch until it expires
-              if ((int32_t)(nowMs - _chargingLatchedUntilMs) <= 0) {
-                _fallbackCharging = true;
-              }
-            }
+        if (dt >= 1000) {
+          const int32_t dv = (int32_t)vBatMv - (int32_t)_lastVBatMv;
+          // Turn ON: any clear rise
+          if (dv >= 3) {
+            _fallbackCharging = true;
+            _chargingLatchedUntilMs = nowMs + 120000UL; // 120s latch
+          }
+          // Turn OFF: only after latch and a definite drop
+          if ((int32_t)(nowMs - _chargingLatchedUntilMs) > 0 && dv <= -10) {
+            _fallbackCharging = false;
+          }
+          // While latch active, keep showing charging
+          if ((int32_t)(nowMs - _chargingLatchedUntilMs) <= 0) {
+            _fallbackCharging = true;
           }
 
           _lastVBatMs = nowMs;

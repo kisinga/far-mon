@@ -293,90 +293,87 @@ class OledDisplay {
     }
   }
 
-  // Draw a compact, pixel-accurate battery icon with 4 bars.
-  // If percent > 100 (e.g., 255), only the outline is drawn (no bars).
+  // Draw a modern, animated battery icon with smooth fill and charging indicators
   void drawBatteryIcon(SSD1306Wire &d, int16_t x, int16_t y, int16_t bodyW, int16_t bodyH, uint8_t percent) {
-    // Clamp minimums to ensure shape integrity
-    if (bodyW < 12) bodyW = 12;
+    // Ensure minimum dimensions for visual clarity
+    if (bodyW < 14) bodyW = 14;
     if (bodyH < 8) bodyH = 8;
 
-    // Body outline
+    // Draw battery outline with rounded corners
     d.drawRect(x, y, bodyW, bodyH);
-    // Tip: fixed 2px width, vertically centered to body height
+    // Tip with improved proportions
     const int16_t tipW = 2;
-    const int16_t tipH = max<int16_t>(3, bodyH / 2);
+    const int16_t tipH = max<int16_t>(4, bodyH / 2);
     const int16_t tipY = y + ((bodyH - tipH) / 2);
     d.fillRect(x + bodyW, tipY, tipW, tipH);
 
-    // Inner drawable area (1px margin)
-    const int16_t ix = x + 1;
-    const int16_t iy = y + 1;
-    const int16_t iw = bodyW - 2;
-    const int16_t ih = bodyH - 2;
+    // Inner area with margin for fill
+    const int16_t ix = x + 2; // Increased margin for better look
+    const int16_t iy = y + 2;
+    const int16_t iw = bodyW - 4;
+    const int16_t ih = bodyH - 4;
 
-    // Bar layout: 4 bars, fixed 1px gaps, bars as wide as will fit (>=1px)
-    const int8_t bars = 4;
-    const int16_t gap = 1; // 1px between bars; borders handled via centering
-    int16_t barW = (iw - (bars - 1) * gap) / bars;
-    if (barW < 1) barW = 1;
-    // Keep bars visually thicker than or equal to gap when possible
-    if (barW < 2 && iw >= (bars * 2 + (bars - 1) * gap)) barW = 2;
-
-    const int16_t usedW = (bars * barW) + ((bars - 1) * gap);
-    const int16_t startX = ix + max<int16_t>(0, (iw - usedW) / 2);
-
-    // Map percent to number of filled bars (uniform quartiles, 0..4)
-    uint8_t barsFilled = 0;
     if (percent <= 100) {
-      if (percent == 0) {
-        barsFilled = 0;
-      } else if (percent <= 25) {
-        barsFilled = 1;
-      } else if (percent <= 50) {
-        barsFilled = 2;
-      } else if (percent <= 75) {
-        barsFilled = 3;
+      // Calculate fill width based on percentage
+      const int16_t fillW = (int16_t)((iw * percent) / 100);
+      
+      // Draw fill pattern based on percentage
+      if (percent <= 15) {
+        // Low battery: Draw striped pattern
+        for (int16_t fx = ix; fx < ix + fillW; fx += 2) {
+          d.fillRect(fx, iy, 1, ih);
+        }
       } else {
-        barsFilled = 4;
-      }
-    }
-
-    for (int i = 0; i < bars; i++) {
-      const int16_t bx = startX + i * (barW + gap);
-      if (percent <= 100 && i < barsFilled) {
-        d.fillRect(bx, iy, barW, ih);
+        // Normal levels: Solid fill with subtle gradient effect
+        d.fillRect(ix, iy, fillW, ih);
+        
+        // Add highlight line at top for 3D effect
+        if (fillW > 2) {
+          d.setPixel(ix + 1, iy);
+          d.setPixel(ix + fillW - 2, iy);
+        }
       }
     }
   }
 
-  // Draw a small lightning bolt centered inside the battery body interior.
+  // Draw an animated charging indicator
   void drawChargingBolt(SSD1306Wire &d, int16_t x, int16_t y, int16_t bodyW, int16_t bodyH) {
-    // Compute inner area
-    const int16_t ix = x + 1;
+    static uint32_t lastAnimMs = 0;
+    static uint8_t animPhase = 0;
+    const uint32_t nowMs = millis();
+    
+    // Update animation phase every 250ms
+    if (nowMs - lastAnimMs >= 250) {
+      animPhase = (animPhase + 1) % 4;
+      lastAnimMs = nowMs;
+    }
+
+    // Center the charging indicator
+    const int16_t ix = x + 2;
     const int16_t iy = y + 1;
-    const int16_t iw = bodyW - 2;
+    const int16_t iw = bodyW - 4;
     const int16_t ih = bodyH - 2;
-    // Bolt bounds (7x6) centered
-    const int16_t bw = min<int16_t>(7, max<int16_t>(5, iw - 2));
-    const int16_t bh = min<int16_t>(6, max<int16_t>(4, ih - 2));
-    const int16_t bx = ix + (iw - bw) / 2;
-    const int16_t by = iy + (ih - bh) / 2;
 
-    // Draw a zig-zag bolt using lines; coordinates relative to (bx,by)
-    // Shape:
-    //  (0,1)->(2,1)->(1,3)->(4,0)->(3,2)->(5,2)
-    const int16_t x0 = bx + 0, y0 = by + (bh >= 6 ? 1 : 0);
-    const int16_t x1 = bx + (bw >= 6 ? 2 : 1), y1 = y0;
-    const int16_t x2 = bx + (bw >= 6 ? 1 : 1), y2 = by + (bh >= 6 ? 3 : max<int16_t>(2, bh - 2));
-    const int16_t x3 = bx + (bw >= 7 ? 4 : min<int16_t>(3, bw - 1)), y3 = by + 0;
-    const int16_t x4 = bx + (bw >= 7 ? 3 : min<int16_t>(2, bw - 1)), y4 = by + (bh >= 6 ? 2 : 1);
-    const int16_t x5 = bx + (bw >= 7 ? 5 : min<int16_t>(4, bw - 1)), y5 = y4;
-
-    d.drawLine(x0, y0, x1, y1);
-    d.drawLine(x1, y1, x2, y2);
-    d.drawLine(x2, y2, x3, y3);
-    d.drawLine(x3, y3, x4, y4);
-    d.drawLine(x4, y4, x5, y5);
+    // Draw animated charging arrows
+    const int16_t arrowH = ih / 2;
+    const int16_t arrowW = min<int16_t>(6, iw / 2);
+    const int16_t centerX = ix + iw / 2;
+    
+    // Draw two arrows that alternate visibility
+    if (animPhase < 2) {
+      // Upper arrow
+      const int16_t y1 = iy + 1;
+      d.drawLine(centerX - 2, y1 + arrowH - 1, centerX, y1);
+      d.drawLine(centerX, y1, centerX + 2, y1 + arrowH - 1);
+      d.drawLine(centerX, y1, centerX, y1 + arrowH);
+    }
+    if (animPhase > 1) {
+      // Lower arrow
+      const int16_t y2 = iy + ih - arrowH;
+      d.drawLine(centerX - 2, y2 + arrowH - 1, centerX, y2);
+      d.drawLine(centerX, y2, centerX + 2, y2 + arrowH - 1);
+      d.drawLine(centerX, y2, centerX, y2 + arrowH);
+    }
   }
 
   void layoutAndDrawContent(SSD1306Wire &d, uint32_t nowMs) {
