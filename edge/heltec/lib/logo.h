@@ -72,12 +72,6 @@ const unsigned char logo_small_bits [] PROGMEM = {
 // Provide explicit dimensions for small logo
 #define logo_small_width 48
 #define logo_small_height 48
-// Array of all bitmaps for convenience. (Total bytes used to store images in PROGMEM = 528)
-const int farmallArray_LEN = 1;
-const unsigned char* farmallArray[1] = {
-	logo_bits
-};
-
 
 #define logo_width 63
 #define logo_height 63

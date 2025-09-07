@@ -5,9 +5,8 @@
 
 #include <memory>
 #include "display.h"
-
-// Forward declarations
-class LoRaComm;
+#include "wifi_manager.h"
+#include "lora_comm.h"
 
 // Base interface for header right display providers
 class HeaderRightProvider {

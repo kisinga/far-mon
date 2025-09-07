@@ -1,332 +1,234 @@
-// Minimal, extendable coordination logic for Heltec/ESP32 remote node
-// - Uses shared scheduler from lib/scheduler.h
-// - Device-specific AppState remains local to this file
-// - Example tasks: heartbeat, analog input reader, periodic reporter
+// Simplified Remote Implementation - Uses Common Application Framework
+// Much cleaner and more maintainable than the original
 
-#include <Arduino.h>
-#include "../lib/scheduler.h"
-#include "../lib/display.h"
-#include "../lib/debug.h"
-#include "../lib/logger.h"
-#include "../lib/board_config.h"
-// Align LoRa RF params with master
-#ifndef LORA_COMM_RF_FREQUENCY
-#define LORA_COMM_RF_FREQUENCY 868000000UL
-#endif
-#ifndef LORA_COMM_TX_POWER_DBM
-#define LORA_COMM_TX_POWER_DBM 14
-#endif
-#include "../lib/lora_comm.h"
-// System Initialization Helper
-#include "../lib/system_init.h"
+#include "../lib/common_app.h"
+#include "../lib/device_config.h"
+#include "../lib/device_config.cpp"
+#include "../lib/system_services.h"
+#include "../lib/task_manager.h"
+#include "../lib/display_provider.h"
+#include "../lib/logo.cpp"
 
-// ===== Configuration =====
-// Change to any valid ADC-capable pin on your board. Heltec LoRa 32 commonly uses GPIO34.
-static const uint8_t ANALOG_INPUT_PIN = 34; // ADC1 channel
-static const float ANALOG_REFERENCE_VOLTAGE = 3.30f; // Volts
-static const bool ENABLE_OLED_DISPLAY = true; // Set false to disable screen usage at runtime
-static const uint8_t MASTER_NODE_ID = 1; // Destination for data frames
+struct HomeCtx { OledDisplay* display; };
+static HomeCtx remoteHomeCtx{};
 
-// Device identity (1-byte id encoded as two ASCII digits to match docs)
-static const char DEVICE_ID[] = "03";
+// Simple homescreen renderer for quick visual confirmation
+static void renderRemoteHome(SSD1306Wire &d, void *ctx) {
+    int16_t cx = 52, cy = 14, cw = 76, ch = 50; // fallback offsets: logo 48px + 4px margin
+    HomeCtx* c = static_cast<HomeCtx*>(ctx);
+    if (c && c->display) {
+        c->display->getContentArea(cx, cy, cw, ch);
+    }
+    d.setTextAlignment(TEXT_ALIGN_LEFT);
+    d.drawString(cx, cy, F("Remote 03"));
+    d.drawString(cx, cy + 14, F("Starting..."));
+}
 
-// Task cadence
-static const uint32_t HEARTBEAT_INTERVAL_MS = 1000;   // 1s
-static const uint32_t ANALOG_READ_INTERVAL_MS = 200;  // 5 Hz sampling
-static const uint32_t REPORT_INTERVAL_MS = 2000;      // 2s
-
-// ===== Device-specific Application State =====
-struct AppState {
-  // Time
-  uint32_t nowMs = 0;
-
-  // Analog sensor
-  int analogRaw = 0;         // 0..4095 on ESP32
-  float analogVoltage = 0.0; // Volts
-
-  // Heartbeat
-  bool heartbeatOn = false;
-  // Reporting jitter scheduler
-  uint32_t nextReportDueMs = 0;
+// Remote-specific state
+struct RemoteAppState : CommonAppState {
+    int analogRaw = 0;
+    float analogVoltage = 0.0f;
+    uint32_t nextReportDueMs = 0;
 };
 
-static AppState appState;
-static TaskScheduler<AppState, 8> scheduler;
-static OledDisplay oled;
-static DebugRouter debugRouter;
-static LoRaComm lora;
-static volatile uint8_t g_lastAckSrc = 0;
+// Simplified remote application (combines framework + device-specific logic)
+class RemoteApplication {
+public:
+    void initialize();
+    void run();
 
-// ===== Optional Battery Reading (modularized) =====
-#include "../lib/battery_monitor.h"
-static BatteryMonitor::Config g_battCfg;
-static BatteryMonitor::BatteryMonitor g_batteryMonitor(g_battCfg);
-// Optional charge status pin and polarity from board config
-#ifdef CHARGE_STATUS_PIN
-static const int8_t kChargeStatusPin = CHARGE_STATUS_PIN;
-#else
-static const int8_t kChargeStatusPin = -1;
-#endif
-#ifdef CHARGE_STATUS_ACTIVE_LOW
-static const bool kChargeActiveLow = true;
-#endif
+private:
+    // Configuration
+    RemoteConfig config;
 
-// ===== LoRa callbacks =====
-static void onLoraData(uint8_t src, const uint8_t *payload, uint8_t len) {
-  (void)src;
-  (void)payload;
-  (void)len;
-  // Keep minimal; data ACK is auto-handled by lora_comm
+    // Framework components
+    RemoteAppState appState;
+    TaskManager taskManager{16};
+    SystemServices services;
+
+    // Hardware components
+    OledDisplay oled;
+    DebugRouter debugRouter;
+    LoRaComm lora;
+    WifiManager wifiManager{wifiConfig};
+    BatteryMonitor::BatteryMonitor batteryMonitor{batteryConfig};
+    BatteryMonitor::Config batteryConfig;
+
+    // Device-specific setup
+    void setupDeviceConfig();
+    void setupServices();
+    void setupTasks();
+
+    // Task implementations
+    static void taskHeartbeat(CommonAppState& state);
+    static void taskBatteryMonitor(CommonAppState& state);
+    static void taskDisplayUpdate(CommonAppState& state);
+    static void taskLoRaUpdate(CommonAppState& state);
+    static void taskAnalogRead(CommonAppState& state);
+    static void taskTelemetryReport(CommonAppState& state);
+
+    // Static service references (for tasks)
+    static SystemServices* staticServices;
+
+    // Device-specific methods
+    static float convertAdcToVolts(int adcRaw);
+};
+
+// Static member initialization
+SystemServices* RemoteApplication::staticServices = nullptr;
+
+// Implementation
+void RemoteApplication::initialize() {
+    setupDeviceConfig();
+    setupServices();
+    setupTasks();
+
+    LOGI("remote", "Remote application initialized");
 }
 
-static void onLoraAck(uint8_t src, uint16_t msgId) {
-  (void)msgId;
-  g_lastAckSrc = src;
-  // Brief debug overlay to show connectivity
-  debugRouter.debugFor(
-    [](SSD1306Wire &d, void *ctx) {
-      uint8_t s = ctx ? *static_cast<uint8_t*>(ctx) : 0;
-      int16_t cx, cy, cw, ch;
-      oled.getContentArea(cx, cy, cw, ch);
-      d.setTextAlignment(TEXT_ALIGN_LEFT);
-      d.drawString(cx, cy, F("ACK"));
-      d.drawString(cx, cy + 14, String("from ") + String(s));
-    },
-    (void*)&g_lastAckSrc,
-    [](Print &out, void *ctx) {
-      uint8_t s = ctx ? *static_cast<uint8_t*>(ctx) : 0;
-      out.print(F("ack from="));
-      out.print(s);
-    },
-    (void*)&g_lastAckSrc,
-    600
-  );
+void RemoteApplication::run() {
+    appState.nowMs = millis();
+    taskManager.update(appState);
+    delay(1);
 }
 
-// ===== Utilities =====
-static float convertAdcToVolts(int adcRaw) {
-  // ESP32 default ADC resolution is 12-bit (0..4095). Keep simple mapping here.
-  const float scale = 1.0f / 4095.0f;
-  return (float)adcRaw * scale * ANALOG_REFERENCE_VOLTAGE;
+void RemoteApplication::setupDeviceConfig() {
+    config = createRemoteConfig("03");
 }
 
-// ===== Tasks =====
+void RemoteApplication::setupServices() {
+    // Initialize hardware
+    Serial.begin(115200);
+    delay(200);
+    Serial.println();
 
-static void taskHeartbeat(AppState &state) {
-  state.heartbeatOn = !state.heartbeatOn;
-  // Consolidated debug: serial + OLED overlay (800ms)
-  debugRouter.debugFor(
-    // OLED renderer
-    [](SSD1306Wire &d, void *ctx) {
-      (void)ctx;
-      int16_t cx, cy, cw, ch;
-      oled.getContentArea(cx, cy, cw, ch);
-      d.setTextAlignment(TEXT_ALIGN_LEFT);
-      d.drawString(cx, cy, F("Heartbeat"));
-      d.drawString(cx, cy + 14, F("Toggled"));
-    },
-    nullptr, // No context for OLED renderer
-    nullptr, // No serial renderer as it's disabled globally for DebugRouter
-    nullptr, // No context for serial renderer
-    800
-  );
-}
-
-static void taskReadAnalog(AppState &state) {
-  // Simple read; add averaging/median filtering later if needed
-  const int raw = analogRead(ANALOG_INPUT_PIN);
-  state.analogRaw = raw;
-  state.analogVoltage = convertAdcToVolts(raw);
-
-  // Consolidated debug: serial + OLED overlay (400ms)
-  debugRouter.debugFor(
-    // OLED renderer
-    [](SSD1306Wire &d, void *ctx) {
-      AppState *s = static_cast<AppState*>(ctx);
-      int16_t cx, cy, cw, ch;
-      oled.getContentArea(cx, cy, cw, ch);
-      d.setTextAlignment(TEXT_ALIGN_LEFT);
-      d.drawString(cx, cy, F("Analog"));
-      d.drawString(cx, cy + 14, String("raw=") + String(s->analogRaw));
-      d.drawString(cx, cy + 28, String("V=") + String(s->analogVoltage, 3));
-    },
-    &appState,
-    // Serial renderer disabled to reduce verbosity; reports cover this
-    nullptr,
-    nullptr,
-    5
-  );
-}
-
-static void taskReport(AppState &state) {
-  // Respect jittered schedule to avoid herd effects
-  if ((int32_t)(millis() - state.nextReportDueMs) < 0) {
-    return;
-  }
-
-  // Minimal key=value CSV line as per docs (also sent over LoRa)
-  Logger::rawf(Logger::Level::Info, "id=%s,ain_raw=%d,ain_v=%.3f", DEVICE_ID, state.analogRaw, state.analogVoltage);
-
-  // Consolidated debug: serial + OLED overlay (700ms)
-  debugRouter.debugFor(
-    // OLED renderer
-    [](SSD1306Wire &d, void *ctx) {
-      (void)ctx;
-      int16_t cx, cy, cw, ch;
-      oled.getContentArea(cx, cy, cw, ch);
-      d.setTextAlignment(TEXT_ALIGN_LEFT);
-      d.drawString(cx, cy, F("Report"));
-      d.drawString(cx, cy + 14, F("Sent"));
-    },
-    nullptr,
-    // Serial renderer
-    [](Print &out, void *ctx) {
-      AppState *s = static_cast<AppState*>(ctx);
-      out.print(F("report ain_raw="));
-      out.print(s->analogRaw);
-      out.print(F(" ain_v="));
-      out.print(s->analogVoltage, 3);
-    },
-    &appState,
-    700
-  );
-
-  // LoRa: send compact telemetry to master; require ACK (also serves as liveness)
-  char buf[48];
-  int n = snprintf(buf, sizeof(buf), "id=%s,r=%d,v=%.3f", DEVICE_ID, state.analogRaw, state.analogVoltage);
-  if (n > 0) {
-    const bool queued = lora.sendData(MASTER_NODE_ID, (const uint8_t*)buf, (uint8_t)min(n, (int)sizeof(buf) - 1), /*requireAck=*/true);
-    if (!queued) {
-      LOGW("lora", "telemetry not queued (outbox full)");
+    // Initialize OLED display
+    oled.begin(true);
+    oled.setDeviceId("03");
+    oled.setHeaderRightMode(HeaderRightMode::SignalBars);
+    remoteHomeCtx.display = &oled;
+    oled.setHomescreenRenderer(renderRemoteHome, &remoteHomeCtx);
+    oled.setI2cClock(400000);
+    bool found = oled.probeI2C(OLED_I2C_ADDR);
+    Serial.printf("[i2c] OLED 0x%02X found=%s\n", OLED_I2C_ADDR, found ? "yes" : "no");
+    if (!found) {
+        oled.i2cScan(Serial);
     }
-  }
 
-  // Schedule next report with ±20% jitter
-  const int32_t jitter = (int32_t)((int32_t)REPORT_INTERVAL_MS / 5); // 20%
-  const int32_t delta = (int32_t)REPORT_INTERVAL_MS + (int32_t)random(-jitter, jitter + 1);
-  // Clamp to minimum 100ms to avoid zero/negative intervals
-  const int32_t safeDelta = (delta < 100) ? 100 : delta;
-  state.nextReportDueMs = millis() + (uint32_t)safeDelta;
+    // Initialize services
+    services = SystemServices::create(oled, debugRouter, wifiManager, batteryMonitor, lora);
+    staticServices = &services;
+
+    // Initialize LoRa
+    lora.begin(LoRaComm::Mode::Slave, 3);
+    lora.setVerbose(false);
+    lora.setLogLevel((uint8_t)Logger::Level::Info);
+
+    // Initialize analog pin
+    pinMode(config.analogInputPin, INPUT);
+
+    // Seed random for jitter
+    randomSeed((uint32_t)millis());
+
+    // Initialize first report time
+    const int32_t jitter = (int32_t)((int32_t)config.telemetryReportIntervalMs / 5);
+    const int32_t delta = (int32_t)config.telemetryReportIntervalMs + (int32_t)random(-jitter, jitter + 1);
+    RemoteAppState& remoteState = static_cast<RemoteAppState&>(appState);
+    remoteState.nextReportDueMs = millis() + (uint32_t)max(100, (int)delta);
+
+    LOGI("remote", "Services initialized");
 }
 
-// Display homescreen renderer: called when no debug overlay is active
-static void renderHome(SSD1306Wire &d, void *ctx) {
-  AppState *s = static_cast<AppState*>(ctx);
-  // Determine content area from layout manager
-  int16_t cx, cy, cw, ch;
-  oled.getContentArea(cx, cy, cw, ch);
+void RemoteApplication::setupTasks() {
+    // Register common tasks
+    taskManager.registerTask("heartbeat", taskHeartbeat, config.heartbeatIntervalMs);
+    taskManager.registerTask("battery", taskBatteryMonitor, 1000);
+    taskManager.registerTask("display", taskDisplayUpdate, config.displayUpdateIntervalMs);
+    taskManager.registerTask("lora", taskLoRaUpdate, config.loraTaskIntervalMs);
+    taskManager.registerTask("analog_read", taskAnalogRead, config.analogReadIntervalMs);
+    taskManager.registerTask("telemetry", taskTelemetryReport, 100);
 
-  // Column layout within content area
-  const int16_t leftX = cx;
-  const int16_t rightX = cx + cw;
-
-  // Left: Analog card
-  d.setTextAlignment(TEXT_ALIGN_LEFT);
-  d.setFont(ArialMT_Plain_10);
-  d.drawString(leftX, cy, F("Analog"));
-  d.setFont(ArialMT_Plain_16);
-  d.drawString(leftX, cy + 12, String(s->analogVoltage, 3) + String(" V"));
-  d.setFont(ArialMT_Plain_10);
-  d.drawString(leftX, cy + 30, String("raw ") + String(s->analogRaw));
-
-  // Right: Status card
-  d.setTextAlignment(TEXT_ALIGN_RIGHT);
-  d.setFont(ArialMT_Plain_10);
-  d.drawString(rightX, cy, F("Status"));
-  d.setFont(ArialMT_Plain_16);
-  d.drawString(rightX, cy + 12, s->heartbeatOn ? F("HB ON") : F("HB OFF"));
-  d.setFont(ArialMT_Plain_10);
-  const bool linkOk = lora.isConnected();
-  const int16_t rssi = lora.getLastRssiDbm();
-  d.drawString(rightX, cy + 30, linkOk ? F("LNK OK") : F("LNK --"));
-  if (linkOk) {
-    d.drawString(rightX, cy + 40, String(rssi) + String(" dBm"));
-  }
+    LOGI("remote", "Tasks registered");
 }
 
-static void taskDisplay(AppState &state) {
-  // Update header LoRa status
-  oled.setLoraStatus(lora.isConnected(), lora.getLastRssiDbm());
-  // Slave shows signal bars on right
-  oled.setHeaderRightMode(HeaderRightMode::SignalBars);
-  // Battery icon on left
-  uint8_t bp = 255;
-  bool haveBatt = g_batteryMonitor.readPercent(bp);
-  
-  // Debug battery readings (anti-spam)
-  bool ok = false;
-  uint16_t vBatMv = g_batteryMonitor.readBatteryMilliVolts(ok);
-  if (ok) {
-    LOG_EVERY_MS(5000, LOGI("batt", "voltage=%.2fV percent=%u", vBatMv / 1000.0f, (unsigned)bp); );
-  } else {
-    LOG_EVERY_MS(10000, LOGW("batt", "battery read failed"); );
-  }
-
-  g_batteryMonitor.updateChargeStatus(state.nowMs);
-  oled.setBatteryStatus(haveBatt, haveBatt ? bp : 0);
-  oled.setBatteryCharging(g_batteryMonitor.isCharging());
-  LOG_EVERY_MS(5000, LOGD("batt", "final charging status = %s", g_batteryMonitor.isCharging() ? "yes" : "no"); );
-  oled.tick(state.nowMs);
+// Task implementations
+void RemoteApplication::taskHeartbeat(CommonAppState& state) {
+    state.heartbeatOn = !state.heartbeatOn;
+    LOGI("remote", "Heartbeat: %s", state.heartbeatOn ? "ON" : "OFF");
 }
 
-static void taskLoRa(AppState &state) {
-  lora.tick(state.nowMs);
-  // Service event-loop more aggressively to avoid missing interrupts
-  Radio.IrqProcess();
+void RemoteApplication::taskBatteryMonitor(CommonAppState& state) {
+    if (staticServices && staticServices->battery) {
+        uint8_t percent = staticServices->battery->getBatteryPercent();
+        bool charging = staticServices->battery->isCharging();
+        LOGI("remote", "Battery: %d%%, Charging: %s", percent, charging ? "YES" : "NO");
+    }
 }
 
-// ===== Arduino Lifecycle =====
+void RemoteApplication::taskDisplayUpdate(CommonAppState& state) {
+    if (staticServices && staticServices->display) {
+        staticServices->display->tick(state.nowMs);
+    }
+}
+
+void RemoteApplication::taskLoRaUpdate(CommonAppState& state) {
+    if (staticServices && staticServices->lora) {
+        staticServices->lora->update(state.nowMs);
+    }
+}
+
+void RemoteApplication::taskAnalogRead(CommonAppState& state) {
+    // Read analog sensor - cast to access remote-specific fields
+    RemoteAppState& remoteState = static_cast<RemoteAppState&>(state);
+    const int raw = analogRead(34); // Using hardcoded pin for now
+    remoteState.analogRaw = raw;
+    remoteState.analogVoltage = convertAdcToVolts(raw);
+
+    LOGI("remote", "Analog: raw=%d, voltage=%.3fV", raw, remoteState.analogVoltage);
+}
+
+void RemoteApplication::taskTelemetryReport(CommonAppState& state) {
+    // Cast to access remote-specific fields
+    RemoteAppState& remoteState = static_cast<RemoteAppState&>(state);
+
+    // Check if it's time to report
+    if ((int32_t)(millis() - remoteState.nextReportDueMs) < 0) {
+        return;
+    }
+
+    // Send telemetry
+    if (staticServices && staticServices->lora) {
+        char buf[48];
+        int n = snprintf(buf, sizeof(buf), "id=%s,r=%d,v=%.3f",
+                        "03", remoteState.analogRaw, remoteState.analogVoltage);
+
+        if (n > 0) {
+            staticServices->lora->sendData(1, (const uint8_t*)buf,
+                                          (uint8_t)min(n, (int)sizeof(buf) - 1), true);
+            LOGI("remote", "Telemetry sent: %s", buf);
+        }
+    }
+
+    // Schedule next report with jitter
+    const int32_t jitter = (int32_t)((int32_t)2000 / 5); // 2 second interval
+    const int32_t delta = 2000 + (int32_t)random(-jitter, jitter + 1);
+    remoteState.nextReportDueMs = millis() + (uint32_t)max(100, (int)delta);
+}
+
+float RemoteApplication::convertAdcToVolts(int adcRaw) {
+    const float scale = 1.0f / 4095.0f;
+    return (float)adcRaw * scale * 3.30f; // 3.3V reference
+}
+
+// Global remote application instance
+RemoteApplication remoteApp;
+
+// Arduino setup
 void setup() {
-  // Parse DEVICE_ID to numeric self id (e.g., "03" -> 3)
-  uint8_t selfId = (uint8_t)strtoul(DEVICE_ID, nullptr, 10);
-  if (selfId == 0) selfId = 1; // avoid zero
-
-  SystemObjects sys = {
-    .oled = oled,
-    .debugRouter = debugRouter,
-    .lora = lora,
-    .batteryMonitor = g_batteryMonitor,
-    .batteryConfig = g_battCfg,
-  };
-  initializeSystem(sys, DEVICE_ID, ENABLE_OLED_DISPLAY, selfId, renderHome, &appState);
-
-  // ADC setup (ESP32)
-  // On ESP32, analogRead returns 0..4095 by default. Some pins require selecting attenuation for full range.
-  // Keep defaults for simplicity; users can tune via analogSetPinAttenuation if needed.
-  pinMode(ANALOG_INPUT_PIN, INPUT);
-
-  // Disable serial output from DebugRouter to avoid duplicate console spam
-  debugRouter.setSerialEnabled(false);
-
-  // LoRa callbacks are specific to remote.ino
-  lora.setOnDataReceived(onLoraData);
-  lora.setOnAckReceived(onLoraAck);
-  lora.setAutoPingEnabled(false); // rely on ACKed telemetry for liveness
-
-  // Seed PRNG for jitter
-  randomSeed((uint32_t)millis() ^ ((uint32_t)DEVICE_ID[0] << 8) ^ ((uint32_t)DEVICE_ID[1] << 16));
-
-  // Register tasks
-  scheduler.registerTask("heartbeat", taskHeartbeat, HEARTBEAT_INTERVAL_MS);
-  scheduler.registerTask("analog_read", taskReadAnalog, ANALOG_READ_INTERVAL_MS);
-  scheduler.registerTask("report", taskReport, 100); // internal jitter decides actual cadence
-  scheduler.registerTask("display", taskDisplay, 200); // ~5 FPS
-  scheduler.registerTask("lora", taskLoRa, 50);
-
-  LOGI("boot", "slave id=%u rf=%lu Hz", selfId, (unsigned long)LORA_COMM_RF_FREQUENCY);
-  LOGI("boot", "Tasks registered.");
-  // Initialize first jittered report time
-  const int32_t jitter = (int32_t)((int32_t)REPORT_INTERVAL_MS / 5);
-  const int32_t delta = (int32_t)REPORT_INTERVAL_MS + (int32_t)random(-jitter, jitter + 1);
-  const int32_t safeDelta2 = (delta < 100) ? 100 : delta;
-  appState.nextReportDueMs = millis() + (uint32_t)safeDelta2;
+    remoteApp.initialize();
 }
 
+// Arduino main loop
 void loop() {
-  appState.nowMs = millis();
-  scheduler.tick(appState);
-  // Yield to WiFi/BLE stacks if enabled; cheap delay to avoid tight spinning
-  delay(1);
+    remoteApp.run();
 }
-
-

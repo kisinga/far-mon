@@ -1,208 +1,191 @@
-// Minimal master (relay) node for Heltec/ESP32
-// - Reuses shared scheduler, display, debug patterns
-// - LoRa master that tracks slaves via periodic pings
-// - ACKs every incoming message
-// - Maintains a small retry queue for reliability
+// Simplified Relay Implementation - Uses Common Application Framework
+// Much cleaner and more maintainable than the original
 
-#include <Arduino.h>
-#include "../lib/scheduler.h"
-#include "../lib/display.h"
+#include "../lib/common_app.h"
+#include "../lib/device_config.h"
+#include "../lib/device_config.cpp"
+#include "../lib/system_services.h"
+#include "../lib/task_manager.h"
 #include "../lib/display_provider.h"
 #include "../lib/wifi_manager.h"
 #include "../lib/wifi_config.h"
-#include "../lib/debug.h"
-#include "../lib/logger.h"
-#include "LoRaWan_APP.h"
-#include "../lib/lora_comm.h"
-#include "../lib/board_config.h"
-// System Initialization Helper
-#include "../lib/system_init.h"
+#include "../lib/logo.cpp"
 
-// ===== Master Identity =====
-static const uint8_t MASTER_ID = 0x01; // numeric id for frames
-static const char DEVICE_ID[] = "01"; // for display/debug
+struct HomeCtx { OledDisplay* display; };
+static HomeCtx relayHomeCtx{};
 
-// ===== App Config =====
-static const uint8_t MAX_PEERS = 16;
+// Simple homescreen renderer for quick visual confirmation
+static void renderRelayHome(SSD1306Wire &d, void *ctx) {
+    int16_t cx = 52, cy = 14, cw = 76, ch = 50; // fallback offsets: logo 48px + 4px margin
+    HomeCtx* c = static_cast<HomeCtx*>(ctx);
+    if (c && c->display) {
+        c->display->getContentArea(cx, cy, cw, ch);
+    }
+    d.setTextAlignment(TEXT_ALIGN_LEFT);
+    d.drawString(cx, cy, F("Relay 01"));
+    d.drawString(cx, cy + 14, F("Starting..."));
+}
 
-// WiFi configuration is now centralized in wifi_config.h
-
-// ===== App State =====
-struct AppState {
-  uint32_t nowMs = 0;
-  bool heartbeatOn = false;
+// Relay-specific state
+struct RelayAppState : CommonAppState {
+    // Add relay-specific state variables here
 };
 
-static AppState app;
-static TaskScheduler<AppState, 8> scheduler;
-static OledDisplay oled;
-static DebugRouter debugRouter;
-static LoRaComm lora;
+// Simplified relay application (combines framework + device-specific logic)
+class RelayApplication {
+public:
+    void initialize();
+    void run();
 
-// WiFi and Display Management (SOLID/KISS/DRY architecture)
-static WifiManager wifiManager(wifiConfig);
-static DisplayManager displayManager(oled);
-static std::unique_ptr<HeaderRightProvider> wifiStatusProvider;
+private:
+    // Configuration
+    RelayConfig config;
 
-// ===== Optional Battery Reading (modularized) =====
-#include "../lib/battery_monitor.h"
-static BatteryMonitor::Config g_battCfg;
-static BatteryMonitor::BatteryMonitor g_batteryMonitor(g_battCfg);
-// Optional charge status pin and polarity from board_config
-#ifdef CHARGE_STATUS_PIN
-static const int8_t kChargeStatusPin = CHARGE_STATUS_PIN;
-#else
-static const int8_t kChargeStatusPin = -1;
-#endif
-#ifdef CHARGE_STATUS_ACTIVE_LOW
-static const bool kChargeActiveLow = (CHARGE_STATUS_ACTIVE_LOW != 0);
-#else
-static const bool kChargeActiveLow = true; // default assumption
-#endif
+    // Framework components
+    RelayAppState appState;
+    TaskManager taskManager{16};
+    SystemServices services;
 
-// Replace custom radio callbacks with LoRaComm event callbacks
-static void onLoraData(uint8_t src, const uint8_t *payload, uint8_t len) {
-  Serial.print(F("[rx] DATA from "));
-  Serial.print(src);
-  Serial.print(F(" len="));
-  Serial.println(len);
+    // Hardware components
+    OledDisplay oled;
+    DebugRouter debugRouter;
+    LoRaComm lora;
+    WifiManager wifiManager{wifiConfig};
+    BatteryMonitor::BatteryMonitor batteryMonitor{batteryConfig};
+    BatteryMonitor::Config batteryConfig;
+
+    // Device-specific setup
+    void setupDeviceConfig();
+    void setupServices();
+    void setupTasks();
+
+    // Task implementations
+    static void taskHeartbeat(CommonAppState& state);
+    static void taskBatteryMonitor(CommonAppState& state);
+    static void taskDisplayUpdate(CommonAppState& state);
+    static void taskWifiMonitor(CommonAppState& state);
+    static void taskLoRaUpdate(CommonAppState& state);
+    static void taskPeerMonitor(CommonAppState& state);
+
+    // Static service references (for tasks)
+    static SystemServices* staticServices;
+};
+
+// Static member initialization
+SystemServices* RelayApplication::staticServices = nullptr;
+
+// Implementation
+void RelayApplication::initialize() {
+    setupDeviceConfig();
+    setupServices();
+    setupTasks();
+
+    LOGI("relay", "Relay application initialized");
 }
 
-static void onLoraAck(uint8_t src, uint16_t msgId) {
-  Serial.print(F("[rx] ACK from "));
-  Serial.print(src);
-  Serial.print(F(" msgId="));
-  Serial.println(msgId);
+void RelayApplication::run() {
+    appState.nowMs = millis();
+    taskManager.update(appState);
+    delay(1);
 }
 
-// ===== Tasks =====
-static void taskHeartbeat(AppState &state) {
-  state.heartbeatOn = !state.heartbeatOn;
-  debugRouter.debugFor(
-    [](SSD1306Wire &d, void *ctx) {
-      (void)ctx;
-      int16_t cx, cy, cw, ch;
-      oled.getContentArea(cx, cy, cw, ch);
-      d.setTextAlignment(TEXT_ALIGN_LEFT);
-      d.drawString(cx, cy, F("Master"));
-      d.drawString(cx, cy + 14, F("Heartbeat"));
-    },
-    nullptr,
-    nullptr, // No serial renderer
-    nullptr,
-    600
-  );
+void RelayApplication::setupDeviceConfig() {
+    config = createRelayConfig("01");
 }
 
-static void taskDisplay(AppState &state) {
-  // Update display manager (handles all display providers automatically)
-  // WiFi status is updated by the dedicated taskWiFi function
-  displayManager.updateAndRefresh();
+void RelayApplication::setupServices() {
+    // Initialize hardware
+    Serial.begin(115200);
+    delay(200);
+    Serial.println();
 
-  // Battery management (unchanged - still handled directly on OLED)
-  uint8_t bp = 255;
-  bool haveBatt = g_batteryMonitor.readPercent(bp);
+    // Initialize OLED display
+    oled.begin(true);
+    oled.setDeviceId("01");
+    oled.setHeaderRightMode(HeaderRightMode::PeerCount);
+    relayHomeCtx.display = &oled;
+    oled.setHomescreenRenderer(renderRelayHome, &relayHomeCtx);
+    oled.setI2cClock(400000);
+    bool found = oled.probeI2C(OLED_I2C_ADDR);
+    Serial.printf("[i2c] OLED 0x%02X found=%s\n", OLED_I2C_ADDR, found ? "yes" : "no");
+    if (!found) {
+        oled.i2cScan(Serial);
+    }
 
-  // Debug battery readings
-  bool ok = false;
-  uint16_t vBatMv = g_batteryMonitor.readBatteryMilliVolts(ok);
-  if (ok) {
-    LOG_EVERY_MS(5000, LOGI("batt", "voltage=%.2fV percent=%u", vBatMv / 1000.0f, (unsigned)bp); );
-  } else {
-    LOG_EVERY_MS(10000, LOGW("batt", "battery read failed"); );
-  }
+    // Initialize services
+    services = SystemServices::create(oled, debugRouter, wifiManager, batteryMonitor, lora);
+    staticServices = &services;
 
-  oled.setBatteryStatus(haveBatt, haveBatt ? bp : 0);
-  g_batteryMonitor.updateChargeStatus(state.nowMs);
-  oled.setBatteryCharging(g_batteryMonitor.isCharging());
-  LOG_EVERY_MS(5000, LOGD("batt", "final charging status = %s", g_batteryMonitor.isCharging() ? "yes" : "no"); );
+    // Initialize LoRa
+    lora.begin(LoRaComm::Mode::Master, 1);
+    lora.setVerbose(false);
+    lora.setLogLevel((uint8_t)Logger::Level::Info);
 
-  // WiFi status debugging
-  LOG_EVERY_MS(10000, wifiManager.printStatus(); );
+    LOGI("relay", "Services initialized");
 }
 
-static void renderHome(SSD1306Wire &d, void *ctx) {
-  (void)ctx;
-  // Fit within computed content area
-  int16_t cx, cy, cw, ch;
-  oled.getContentArea(cx, cy, cw, ch);
-  d.setTextAlignment(TEXT_ALIGN_LEFT);
-  d.setFont(ArialMT_Plain_10);
-  d.drawString(cx, cy, F("Peers"));
-  d.setFont(ArialMT_Plain_16);
-  // Count only currently connected peers (per TTL in LoRaComm)
-  size_t connectedCount = 0;
-  for (size_t i = 0; ; i++) {
-    LoRaComm::PeerInfo tmp{};
-    if (!lora.getPeerByIndex(i, tmp)) break;
-    if (tmp.connected) connectedCount++;
-  }
-  d.drawString(cx, cy + 12, String((uint32_t)connectedCount));
-  d.setFont(ArialMT_Plain_10);
-  // Show first two peers
-  uint8_t shown = 0;
-  for (size_t i = 0; i < MAX_PEERS && shown < 2; i++) {
-    LoRaComm::PeerInfo p{};
-    if (!lora.getPeerByIndex(i, p)) break;
-    d.drawString(cx, cy + 28 + shown * 10, String("id=") + String(p.peerId) + String(p.connected ? " ok" : " x"));
-    shown++;
-  }
+void RelayApplication::setupTasks() {
+    // Register common tasks
+    taskManager.registerTask("heartbeat", taskHeartbeat, config.heartbeatIntervalMs);
+    taskManager.registerTask("battery", taskBatteryMonitor, 1000);
+    taskManager.registerTask("display", taskDisplayUpdate, config.displayUpdateIntervalMs);
+    taskManager.registerTask("lora", taskLoRaUpdate, config.loraTaskIntervalMs);
+    taskManager.registerTask("wifi", taskWifiMonitor, 100);
+    taskManager.registerTask("peer_monitor", taskPeerMonitor, config.peerMonitorIntervalMs);
+
+    LOGI("relay", "Tasks registered");
 }
 
-static void taskLoRa(AppState &state) {
-  (void)state;
-  lora.tick(millis());
-  Radio.IrqProcess();
+// Task implementations
+void RelayApplication::taskHeartbeat(CommonAppState& state) {
+    state.heartbeatOn = !state.heartbeatOn;
+    LOGI("relay", "Heartbeat: %s", state.heartbeatOn ? "ON" : "OFF");
 }
 
-static void taskWiFi(AppState &state) {
-  // WiFi manager handles reconnection and status monitoring
-  // The display manager will automatically update the display with WiFi status
-  wifiManager.update(state.nowMs);
+void RelayApplication::taskBatteryMonitor(CommonAppState& state) {
+    if (staticServices && staticServices->battery) {
+        uint8_t percent = staticServices->battery->getBatteryPercent();
+        bool charging = staticServices->battery->isCharging();
+        LOGI("relay", "Battery: %d%%, Charging: %s", percent, charging ? "YES" : "NO");
+    }
 }
 
-// Example: enqueue a small broadcast every 10s (disabled by default)
-static void maybeBroadcastTick(AppState &state) {
-  (void)state;
-  // Disabled to keep minimal; enable if needed for testing
+void RelayApplication::taskDisplayUpdate(CommonAppState& state) {
+    if (staticServices && staticServices->display) {
+        staticServices->display->tick(state.nowMs);
+    }
 }
 
-// ===== Arduino lifecycle =====
+void RelayApplication::taskWifiMonitor(CommonAppState& state) {
+    if (staticServices && staticServices->wifi) {
+        staticServices->wifi->update(state.nowMs);
+        bool connected = staticServices->wifi->isConnected();
+        LOGI("relay", "WiFi: %s", connected ? "CONNECTED" : "DISCONNECTED");
+    }
+}
+
+void RelayApplication::taskLoRaUpdate(CommonAppState& state) {
+    if (staticServices && staticServices->lora) {
+        staticServices->lora->update(state.nowMs);
+    }
+}
+
+void RelayApplication::taskPeerMonitor(CommonAppState& state) {
+    if (staticServices && staticServices->lora) {
+        size_t peerCount = staticServices->lora->getPeerCount();
+        LOGI("relay", "Connected peers: %u", (unsigned)peerCount);
+    }
+}
+
+// Global relay application instance
+RelayApplication relayApp;
+
+// Arduino setup
 void setup() {
-  SystemObjects sys = {
-    .oled = oled,
-    .debugRouter = debugRouter,
-    .lora = lora,
-    .batteryMonitor = g_batteryMonitor,
-    .batteryConfig = g_battCfg,
-    // .scheduler = scheduler, // AppState is generic so this is removed
-  };
-
-  initializeSystem(sys, DEVICE_ID, true, MASTER_ID, renderHome, &app);
-
-  // LoRa callbacks are specific to relay.ino
-  lora.setOnDataReceived(onLoraData);
-  lora.setOnAckReceived(onLoraAck);
-
-  // Initialize WiFi and Display Management (SOLID/KISS/DRY)
-  wifiManager.begin();
-  wifiStatusProvider = std::make_unique<WifiStatusProvider>(wifiManager);
-  displayManager.setHeaderRightProvider(std::move(wifiStatusProvider));
-
-  // Tasks
-  scheduler.registerTask("heartbeat", taskHeartbeat, 1000);
-  scheduler.registerTask("wifi", taskWiFi, 100); // Frequent WiFi monitoring
-  scheduler.registerTask("display", taskDisplay, 800);
-  scheduler.registerTask("lora", taskLoRa, 50);
-  // scheduler.registerTask("broadcast", maybeBroadcastTick, 10000);
-
-  Serial.println(F("[boot] Master tasks registered with WiFi display provider."));
+    relayApp.initialize();
 }
 
+// Arduino main loop
 void loop() {
-  app.nowMs = millis();
-  scheduler.tick(app);
-  delay(1);
+    relayApp.run();
 }
-
-

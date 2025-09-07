@@ -5,9 +5,10 @@
 
 #pragma once
 #include <Arduino.h>
+#include <functional>
 
 template <typename State>
-using TaskCallback = void (*)(State &);
+using TaskCallback = std::function<void(State &)>;
 
 template <typename State, size_t MaxTasks>
 class TaskScheduler {
