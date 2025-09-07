@@ -64,3 +64,5 @@ protected:
 
 // Transport factory function type
 using TransportFactory = TransportInterface* (*)();
+
+// Implementations are provided in communication_manager.h to avoid circular deps

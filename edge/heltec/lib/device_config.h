@@ -60,10 +60,10 @@ public:
         config.communication.routing.enableRouting = true;
         config.communication.routing.routingIntervalMs = DEFAULT_ROUTING_INTERVAL_MS;
 
-        // Add default routes
-        config.communication.routing.routes[0] = {Message::Type::Data, 2, 1, true, 0};        // LoRa -> WiFi
-        config.communication.routing.routes[1] = {Message::Type::Data, 2, 3, true, 1};        // LoRa -> USB
-        config.communication.routing.routes[2] = {Message::Type::Telemetry, 2, 4, true, 0};   // LoRa -> Screen
+        // Add default routes (by transport type)
+        config.communication.routing.routes[0] = {Message::Type::Data, TransportType::LoRa, TransportType::WiFi, true, 0};        // LoRa -> WiFi
+        config.communication.routing.routes[1] = {Message::Type::Data, TransportType::LoRa, TransportType::USB_Debug, true, 1};    // LoRa -> USB
+        config.communication.routing.routes[2] = {Message::Type::Telemetry, TransportType::LoRa, TransportType::Screen, true, 0};  // LoRa -> Screen
         config.communication.routing.routeCount = 3;
 
         config.displayUpdateIntervalMs = 800;
@@ -90,8 +90,8 @@ public:
         config.communication.routing.enableRouting = true;
         config.communication.routing.routingIntervalMs = DEFAULT_ROUTING_INTERVAL_MS;
 
-        // Add default routes
-        config.communication.routing.routes[0] = {Message::Type::Telemetry, 0, 2, true, 0};   // Local -> LoRa
+        // Add default routes (by transport type)
+        config.communication.routing.routes[0] = {Message::Type::Telemetry, TransportType::Unknown, TransportType::LoRa, true, 0}; // Any -> LoRa
         config.communication.routing.routeCount = 1;
 
         config.displayUpdateIntervalMs = 200;

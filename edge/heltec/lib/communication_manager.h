@@ -227,14 +227,17 @@ inline void MessageRouter::disableRoute(TransportType srcType, TransportType dst
 
 inline bool MessageRouter::routeMessage(const Message& message, TransportInterface* sourceTransport,
                                 const TransportRegistry& registry) {
-    if (!sourceTransport) return false;
-
-    TransportType sourceType = sourceTransport->getType();
+    TransportType sourceType = sourceTransport ? sourceTransport->getType() : TransportType::Unknown;
     bool messageRouted = false;
 
     for (const auto& rule : routingRules) {
         if (!rule.enabled) continue;
-        if (!shouldRouteMessage(message, sourceType, rule.destinationType)) continue;
+
+        // Filter by message type
+        if (rule.messageType != message.getType()) continue;
+
+        // Filter by source type if specified
+        if (rule.sourceType != TransportType::Unknown && sourceType != TransportType::Unknown && rule.sourceType != sourceType) continue;
 
         auto destTransports = registry.getTransportsByType(rule.destinationType);
         for (auto destTransport : destTransports) {
@@ -250,7 +253,8 @@ inline bool MessageRouter::routeMessage(const Message& message, TransportInterfa
             if (destTransport->sendMessage(routedMessage)) {
                 Serial.printf("[Router] Routed %s from %s to %s\n",
                             message.getType() == Message::Type::Data ? "DATA" : "MSG",
-                            sourceTransport->getName(), destTransport->getName());
+                            sourceTransport ? sourceTransport->getName() : "Logger",
+                            destTransport->getName());
                 messageRouted = true;
             } else {
                 Serial.printf("[Router] Failed to route to %s\n", destTransport->getName());
@@ -261,9 +265,7 @@ inline bool MessageRouter::routeMessage(const Message& message, TransportInterfa
 }
 
 inline bool MessageRouter::shouldRouteMessage(const Message& message, TransportType sourceType, TransportType destType) const {
-    if (sourceType != TransportType::Unknown && sourceType != destType) {
-        return false;
-    }
+    (void)message; (void)sourceType; (void)destType;
     return true;
 }
 
@@ -402,4 +404,20 @@ inline void CommunicationManager::enableRoute(TransportType srcType, TransportTy
 
 inline void CommunicationManager::disableRoute(TransportType srcType, TransportType dstType) {
     router.disableRoute(srcType, dstType);
+}
+ 
+// ----------------------------------------------------------------------------
+// TransportInterface default callbacks (defined here to avoid circular deps)
+// ----------------------------------------------------------------------------
+inline void TransportInterface::onMessageReceived(const Message& message) {
+    if (commManager) {
+        commManager->routeMessage(message, this);
+    }
+}
+
+inline void TransportInterface::onConnectionStateChanged(ConnectionState newState) {
+    state = newState;
+    if (commManager) {
+        commManager->onTransportStateChanged(this, newState);
+    }
 }

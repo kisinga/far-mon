@@ -1,12 +1,12 @@
 // Simplified Relay Implementation - Uses Common Application Framework
 // Much cleaner and more maintainable than the original
 
-#include "../lib/common_app.h"
 #include "../lib/device_config.h"
 #include "relay_config.h"
 #include "../lib/system_services.h"
 #include "../lib/task_manager.h"
 #include "../lib/display_provider.h"
+#include "../lib/debug.h"
 #include "../lib/wifi_manager.h"
 #include "../lib/logo.cpp"
 #include "../lib/communication_manager.h"
@@ -125,7 +125,7 @@ void RelayApplication::run() {
 }
 
 void RelayApplication::setupDeviceConfig() {
-    config = createRelayConfig("01");
+    config = RelayConfig::create("01");
 }
 
 void RelayApplication::setupServices() {
@@ -152,27 +152,21 @@ void RelayApplication::setupServices() {
 
     // Initialize services
     // Initialize WiFi manager using centralized communication config
-    if (config.communication.wifi.enableWifi) {
+    {
         WifiManager::Config wmConfig;
         wmConfig.ssid = config.communication.wifi.ssid;
         wmConfig.password = config.communication.wifi.password;
         wmConfig.reconnectIntervalMs = config.communication.wifi.reconnectIntervalMs;
         wmConfig.statusCheckIntervalMs = config.communication.wifi.statusCheckIntervalMs;
         wifiManager = std::make_unique<WifiManager>(wmConfig);
-        wifiManager->begin();
+        if (config.communication.wifi.enableWifi) {
+            wifiManager->begin();
+        }
     }
 
-    // Create services - WiFi manager might be null if disabled
-    if (wifiManager) {
-        services = SystemServices::create(oled, debugRouter, *wifiManager, batteryMonitor, lora);
-        staticWifi = wifiManager.get();
-    } else {
-        // TODO: Need to update SystemServices::create to handle optional WiFi
-        // For now, create with a dummy WiFi manager
-        WifiManager dummyWifi({nullptr, nullptr, 30000, 5000});
-        services = SystemServices::create(oled, debugRouter, dummyWifi, batteryMonitor, lora);
-        staticWifi = nullptr;
-    }
+    // Create services using a guaranteed WifiManager instance (may be uninitialized)
+    services = SystemServices::create(oled, debugRouter, *wifiManager, batteryMonitor, lora);
+    staticWifi = wifiManager.get();
 
     staticConfig = &config;
     staticLora = &lora;
@@ -249,10 +243,10 @@ void RelayApplication::setupCommunicationManager() {
         if (route.enabled) {
             MessageRouter::RoutingRule rule(
                 route.messageType,
-                static_cast<TransportType>(route.sourceTransportId),
-                static_cast<TransportType>(route.destinationTransportId),
-                false, // ack required
-                true   // enabled
+                route.sourceType,
+                route.destinationType,
+                false,
+                true
             );
             commManager->addRoutingRule(rule);
         }

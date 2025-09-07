@@ -6,6 +6,8 @@
 #include <cstdint>
 #include "wifi_manager.h"
 #include "message.h"
+// Use shared transport types
+#include "transport_types.h"
 
 // USB Configuration
 struct UsbConfig {
@@ -82,8 +84,8 @@ struct RoutingConfig {
     // Route definitions
     struct Route {
         Message::Type messageType;     // Message type to route
-        uint8_t sourceTransportId;      // Source transport ID
-        uint8_t destinationTransportId; // Destination transport ID
+        TransportType sourceType;      // Source transport type
+        TransportType destinationType; // Destination transport type
         bool enabled;                  // Route enabled
         uint8_t priority;              // Route priority (0=highest)
     };

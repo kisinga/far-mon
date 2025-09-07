@@ -45,24 +45,4 @@ private:
     }
 };
 
-// ============================================================================
-// LEGACY COMPATIBILITY - Backward compatibility shims
-// ============================================================================
-
-// Relay WiFi configuration (backward compatible)
-static const char RELAY_WIFI_SSID[] = "STARLINK";
-static const char RELAY_WIFI_PASSWORD[] = "awesome33";
-static WifiManager::Config relayWifiConfig = WiFiConfigFactory::createRelayConfig();
-
-// Remote WiFi configuration (backward compatible)
-static const char REMOTE_WIFI_SSID[] = "YourWiFiNetwork";
-static const char REMOTE_WIFI_PASSWORD[] = "YourWiFiPassword";
-static WifiManager::Config remoteWifiConfig = WiFiConfigFactory::createRemoteConfig();
-
-// Default to relay config for backward compatibility
-#ifndef WIFI_CONFIG
-#define WIFI_CONFIG relayWifiConfig
-#endif
-
-// For code that expects the old wifiConfig variable
-static WifiManager::Config wifiConfig = WIFI_CONFIG;
+// (Legacy compatibility shims removed; use WiFiConfigFactory or per-device CommunicationConfig.)

@@ -1,12 +1,12 @@
 // Simplified Remote Implementation - Uses Common Application Framework
 // Much cleaner and more maintainable than the original
 
-#include "../lib/common_app.h"
 #include "../lib/device_config.h"
 #include "remote_config.h"
 #include "../lib/system_services.h"
 #include "../lib/task_manager.h"
 #include "../lib/display_provider.h"
+#include "../lib/debug.h"
 #include "../lib/logo.cpp"
 #include <memory>
 
@@ -95,7 +95,7 @@ void RemoteApplication::run() {
 }
 
 void RemoteApplication::setupDeviceConfig() {
-    config = createRemoteConfig("03");
+    config = RemoteConfig::create("03");
 }
 
 void RemoteApplication::setupServices() {
@@ -118,15 +118,17 @@ void RemoteApplication::setupServices() {
     }
 
     // Initialize services
-    // Initialize WiFi manager using centralized communication config
-    if (config.communication.wifi.enableWifi) {
+    // Always create a WifiManager instance; enable begin() only if WiFi is enabled
+    {
         WifiManager::Config wmConfig;
         wmConfig.ssid = config.communication.wifi.ssid;
         wmConfig.password = config.communication.wifi.password;
         wmConfig.reconnectIntervalMs = config.communication.wifi.reconnectIntervalMs;
         wmConfig.statusCheckIntervalMs = config.communication.wifi.statusCheckIntervalMs;
         wifiManager = std::make_unique<WifiManager>(wmConfig);
-        wifiManager->begin();
+        if (config.communication.wifi.enableWifi) {
+            wifiManager->begin();
+        }
     }
 
     services = SystemServices::create(oled, debugRouter, *wifiManager, batteryMonitor, lora);
