@@ -33,7 +33,7 @@ static inline void vextOff() {}
 using RenderCallback = void (*)(SSD1306Wire &display, void *context);
 
 enum class LayoutMode : uint8_t { Half = 0, Full = 1 };
-enum class HeaderRightMode : uint8_t { SignalBars = 0, PeerCount = 1 };
+enum class HeaderRightMode : uint8_t { SignalBars = 0, PeerCount = 1, WifiStatus = 2 };
 
 class OledDisplay {
  public:
@@ -125,6 +125,10 @@ class OledDisplay {
   // Header right area configuration
   void setHeaderRightMode(HeaderRightMode mode) { headerRightMode = mode; }
   void setPeerCount(uint16_t count) { headerPeerCount = count; }
+  void setWifiStatus(bool connected, int8_t signalStrength = -1) {
+    wifiConnected = connected;
+    wifiSignalStrength = signalStrength;
+  }
 
   void getContentArea(int16_t &x, int16_t &y, int16_t &w, int16_t &h) const {
     x = lastContentX;
@@ -285,11 +289,51 @@ class OledDisplay {
     d.drawString(d.width(), 0, String("P:") + String((uint32_t)headerPeerCount));
   }
 
+  void drawWifiStatus(SSD1306Wire &d) {
+    const int16_t topY = 0;
+    const int16_t headerH = 10;
+    const int8_t bars = 4;
+    const int8_t barWidth = 2;
+    const int8_t barGap = 1;
+    const int8_t maxBarHeight = headerH - 2;
+    const int16_t totalWidth = bars * barWidth + (bars - 1) * barGap;
+    int16_t startX = d.width() - totalWidth;
+
+    if (!wifiConnected) {
+      // Draw disconnected WiFi icon (crossed out)
+      d.drawHorizontalLine(startX, topY + maxBarHeight / 2, totalWidth);
+      d.drawVerticalLine(startX + totalWidth / 2, topY, maxBarHeight);
+      return;
+    }
+
+    uint8_t level = 0;
+    if (wifiSignalStrength >= 0) {
+      // Map signal strength 0-100% to 1-4 bars
+      if (wifiSignalStrength <= 25) level = 1;
+      else if (wifiSignalStrength <= 50) level = 2;
+      else if (wifiSignalStrength <= 75) level = 3;
+      else level = 4;
+    }
+
+    for (int i = 0; i < bars; i++) {
+      int16_t x = startX + i * (barWidth + barGap);
+      int8_t h = (int8_t)((i + 1) * maxBarHeight / bars);
+      int16_t y = topY + (maxBarHeight - h);
+      if (i < level) {
+        d.fillRect(x, y, barWidth, h);
+      } else {
+        d.drawRect(x, y, barWidth, h);
+      }
+    }
+  }
+
   void drawHeaderRight(SSD1306Wire &d) {
     if (headerRightMode == HeaderRightMode::SignalBars) {
       drawLoraSignal(d);
-    } else {
+    } else if (headerRightMode == HeaderRightMode::PeerCount) {
       drawPeersCount(d);
+    } else if (headerRightMode == HeaderRightMode::WifiStatus) {
+      drawWifiStatus(d);
     }
   }
 
@@ -463,6 +507,8 @@ class OledDisplay {
   // Header configuration
   HeaderRightMode headerRightMode = HeaderRightMode::SignalBars;
   uint16_t headerPeerCount = 0;
+  bool wifiConnected = false;
+  int8_t wifiSignalStrength = -1;
 
   SSD1306Wire display;
 };

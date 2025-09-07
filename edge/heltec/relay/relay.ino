@@ -7,6 +7,9 @@
 #include <Arduino.h>
 #include "../lib/scheduler.h"
 #include "../lib/display.h"
+#include "../lib/display_provider.h"
+#include "../lib/wifi_manager.h"
+#include "../lib/wifi_config.h"
 #include "../lib/debug.h"
 #include "../lib/logger.h"
 #include "LoRaWan_APP.h"
@@ -22,6 +25,8 @@ static const char DEVICE_ID[] = "01"; // for display/debug
 // ===== App Config =====
 static const uint8_t MAX_PEERS = 16;
 
+// WiFi configuration is now centralized in wifi_config.h
+
 // ===== App State =====
 struct AppState {
   uint32_t nowMs = 0;
@@ -33,6 +38,11 @@ static TaskScheduler<AppState, 8> scheduler;
 static OledDisplay oled;
 static DebugRouter debugRouter;
 static LoRaComm lora;
+
+// WiFi and Display Management (SOLID/KISS/DRY architecture)
+static WifiManager wifiManager(wifiConfig);
+static DisplayManager displayManager(oled);
+static std::unique_ptr<HeaderRightProvider> wifiStatusProvider;
 
 // ===== Optional Battery Reading (modularized) =====
 #include "../lib/battery_monitor.h"
@@ -85,23 +95,14 @@ static void taskHeartbeat(AppState &state) {
 }
 
 static void taskDisplay(AppState &state) {
-  // Header right: show peer count (master)
-  size_t connectedCount = 0;
-  for (size_t i = 0;; i++) {
-    LoRaComm::PeerInfo p{};
-    if (!lora.getPeerByIndex(i, p)) break;
-    if (p.connected) connectedCount++;
-  }
-  oled.setHeaderRightMode(HeaderRightMode::PeerCount);
-  oled.setPeerCount((uint16_t)connectedCount);
+  // Update display manager (handles all display providers automatically)
+  // WiFi status is updated by the dedicated taskWiFi function
+  displayManager.updateAndRefresh();
 
-  // LoRa status still provided to allow other renderers to use RSSI if needed
-  oled.setLoraStatus(true, lora.getLastRssiDbm());
-
-  // Battery icon on left
+  // Battery management (unchanged - still handled directly on OLED)
   uint8_t bp = 255;
   bool haveBatt = g_batteryMonitor.readPercent(bp);
-  
+
   // Debug battery readings
   bool ok = false;
   uint16_t vBatMv = g_batteryMonitor.readBatteryMilliVolts(ok);
@@ -110,12 +111,14 @@ static void taskDisplay(AppState &state) {
   } else {
     LOG_EVERY_MS(10000, LOGW("batt", "battery read failed"); );
   }
-  
+
   oled.setBatteryStatus(haveBatt, haveBatt ? bp : 0);
   g_batteryMonitor.updateChargeStatus(state.nowMs);
   oled.setBatteryCharging(g_batteryMonitor.isCharging());
   LOG_EVERY_MS(5000, LOGD("batt", "final charging status = %s", g_batteryMonitor.isCharging() ? "yes" : "no"); );
-  oled.tick(state.nowMs);
+
+  // WiFi status debugging
+  LOG_EVERY_MS(10000, wifiManager.printStatus(); );
 }
 
 static void renderHome(SSD1306Wire &d, void *ctx) {
@@ -152,6 +155,12 @@ static void taskLoRa(AppState &state) {
   Radio.IrqProcess();
 }
 
+static void taskWiFi(AppState &state) {
+  // WiFi manager handles reconnection and status monitoring
+  // The display manager will automatically update the display with WiFi status
+  wifiManager.update(state.nowMs);
+}
+
 // Example: enqueue a small broadcast every 10s (disabled by default)
 static void maybeBroadcastTick(AppState &state) {
   (void)state;
@@ -175,13 +184,19 @@ void setup() {
   lora.setOnDataReceived(onLoraData);
   lora.setOnAckReceived(onLoraAck);
 
+  // Initialize WiFi and Display Management (SOLID/KISS/DRY)
+  wifiManager.begin();
+  wifiStatusProvider = std::make_unique<WifiStatusProvider>(wifiManager);
+  displayManager.setHeaderRightProvider(std::move(wifiStatusProvider));
+
   // Tasks
   scheduler.registerTask("heartbeat", taskHeartbeat, 1000);
+  scheduler.registerTask("wifi", taskWiFi, 100); // Frequent WiFi monitoring
   scheduler.registerTask("display", taskDisplay, 800);
   scheduler.registerTask("lora", taskLoRa, 50);
   // scheduler.registerTask("broadcast", maybeBroadcastTick, 10000);
 
-  Serial.println(F("[boot] Master tasks registered."));
+  Serial.println(F("[boot] Master tasks registered with WiFi display provider."));
 }
 
 void loop() {
