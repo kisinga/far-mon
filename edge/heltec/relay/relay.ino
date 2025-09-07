@@ -3,7 +3,7 @@
 
 #include "../lib/common_app.h"
 #include "../lib/device_config.h"
-#include "../lib/device_config.cpp"
+#include "relay_config.h"
 #include "../lib/system_services.h"
 #include "../lib/task_manager.h"
 #include "../lib/display_provider.h"
@@ -132,6 +132,9 @@ void RelayApplication::setupTasks() {
     taskManager.registerTask("lora", taskLoRaUpdate, config.loraTaskIntervalMs);
     taskManager.registerTask("wifi", taskWifiMonitor, 100);
     taskManager.registerTask("peer_monitor", taskPeerMonitor, config.peerMonitorIntervalMs);
+
+    // Start RTOS scheduler (no-op on non-RTOS builds)
+    taskManager.start(appState);
 
     LOGI("relay", "Tasks registered");
 }

@@ -3,7 +3,7 @@
 
 #include "../lib/common_app.h"
 #include "../lib/device_config.h"
-#include "../lib/device_config.cpp"
+#include "remote_config.h"
 #include "../lib/system_services.h"
 #include "../lib/task_manager.h"
 #include "../lib/display_provider.h"
@@ -147,6 +147,9 @@ void RemoteApplication::setupTasks() {
     taskManager.registerTask("lora", taskLoRaUpdate, config.loraTaskIntervalMs);
     taskManager.registerTask("analog_read", taskAnalogRead, config.analogReadIntervalMs);
     taskManager.registerTask("telemetry", taskTelemetryReport, 100);
+
+    // Start RTOS scheduler (no-op on non-RTOS builds)
+    taskManager.start(appState);
 
     LOGI("remote", "Tasks registered");
 }

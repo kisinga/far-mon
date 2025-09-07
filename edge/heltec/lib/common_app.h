@@ -60,4 +60,5 @@ private:
     void initializeServices();
     void initializeTasks();
     void initializeDisplay();
+    void verifyRtosOrDie();
 };

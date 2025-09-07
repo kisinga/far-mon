@@ -7,6 +7,8 @@
 #include "lora_comm.h"
 #include "board_config.h"
 #include "wifi_config.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 // Initialize the application
 void CommonApplication::initialize() {
@@ -15,6 +17,7 @@ void CommonApplication::initialize() {
 
     // Initialize hardware and services
     initializeHardware();
+    verifyRtosOrDie();
     initializeServices();
     initializeTasks();
     initializeDisplay();
@@ -31,6 +34,7 @@ void CommonApplication::initialize() {
 
 // Main application loop
 void CommonApplication::run() {
+    // If RTOS backend is used, the scheduler runs in its own task; keep loop light.
     while (true) {
         taskManager.update(appState);
         delay(1);
@@ -111,6 +115,7 @@ void CommonApplication::initializeServices() {
 // Initialize task management
 void CommonApplication::initializeTasks() {
     taskManager.registerCommonTasks(*deviceConfig, services);
+    taskManager.start(appState);
 }
 
 // Initialize display settings
@@ -118,5 +123,20 @@ void CommonApplication::initializeDisplay() {
     if (deviceConfig->enableDisplay) {
         oled.setHomescreenRenderer(nullptr, nullptr); // Will be set by device-specific code
         oled.setHeaderRightMode(HeaderRightMode::SignalBars); // Default
+    }
+}
+
+void CommonApplication::verifyRtosOrDie() {
+    // Ensure FreeRTOS scheduler is running; otherwise log and display fatal error and halt.
+    const eTaskState dummy = eRunning; (void)dummy; // ensure header pulled in
+    const BaseType_t started = (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING);
+    if (started) return;
+
+    LOGE("rtos", "FATAL: FreeRTOS scheduler not running; halting");
+    if (deviceConfig && deviceConfig->enableDisplay) {
+        Logger::overlay("RTOS ERROR", "Scheduler not running", millis(), 60000);
+    }
+    while (true) {
+        delay(1000);
     }
 }
