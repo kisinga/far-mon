@@ -13,6 +13,7 @@
 
 struct HomeCtx { OledDisplay* display; };
 static HomeCtx relayHomeCtx{};
+static volatile bool gRelayReady = false;
 
 // Simple homescreen renderer for quick visual confirmation
 static void renderRelayHome(SSD1306Wire &d, void *ctx) {
@@ -23,7 +24,7 @@ static void renderRelayHome(SSD1306Wire &d, void *ctx) {
     }
     d.setTextAlignment(TEXT_ALIGN_LEFT);
     d.drawString(cx, cy, F("Relay 01"));
-    d.drawString(cx, cy + 14, F("Starting..."));
+    d.drawString(cx, cy + 14, gRelayReady ? F("Ready") : F("Starting..."));
 }
 
 // Relay-specific state
@@ -136,6 +137,7 @@ void RelayApplication::setupTasks() {
     // Start RTOS scheduler (no-op on non-RTOS builds)
     taskManager.start(appState);
 
+    gRelayReady = true;
     LOGI("relay", "Tasks registered");
 }
 

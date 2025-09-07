@@ -11,6 +11,7 @@
 
 struct HomeCtx { OledDisplay* display; };
 static HomeCtx remoteHomeCtx{};
+static volatile bool gRemoteReady = false;
 
 // Simple homescreen renderer for quick visual confirmation
 static void renderRemoteHome(SSD1306Wire &d, void *ctx) {
@@ -21,7 +22,7 @@ static void renderRemoteHome(SSD1306Wire &d, void *ctx) {
     }
     d.setTextAlignment(TEXT_ALIGN_LEFT);
     d.drawString(cx, cy, F("Remote 03"));
-    d.drawString(cx, cy + 14, F("Starting..."));
+    d.drawString(cx, cy + 14, gRemoteReady ? F("Ready") : F("Starting..."));
 }
 
 // Remote-specific state
@@ -151,6 +152,7 @@ void RemoteApplication::setupTasks() {
     // Start RTOS scheduler (no-op on non-RTOS builds)
     taskManager.start(appState);
 
+    gRemoteReady = true;
     LOGI("remote", "Tasks registered");
 }
 
