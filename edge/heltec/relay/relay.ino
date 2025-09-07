@@ -172,6 +172,13 @@ void RelayApplication::taskWifiMonitor(CommonAppState& state) {
 void RelayApplication::taskLoRaUpdate(CommonAppState& state) {
     if (staticServices && staticServices->lora) {
         staticServices->lora->update(state.nowMs);
+        // Push LoRa status into header UI
+        if (staticServices->oledDisplay) {
+            // Even though relay shows peer count, set LoRa status too (no harm)
+            staticServices->oledDisplay->setLoraStatus(staticServices->lora->isConnected(),
+                                                       staticServices->lora->getLastRssiDbm());
+            staticServices->oledDisplay->setPeerCount((uint16_t)staticServices->lora->getPeerCount());
+        }
     }
 }
 
@@ -179,6 +186,9 @@ void RelayApplication::taskPeerMonitor(CommonAppState& state) {
     if (staticServices && staticServices->lora) {
         size_t peerCount = staticServices->lora->getPeerCount();
         LOGI("relay", "Connected peers: %u", (unsigned)peerCount);
+        if (staticServices->oledDisplay) {
+            staticServices->oledDisplay->setPeerCount((uint16_t)peerCount);
+        }
     }
 }
 

@@ -179,6 +179,10 @@ void RemoteApplication::taskDisplayUpdate(CommonAppState& state) {
 void RemoteApplication::taskLoRaUpdate(CommonAppState& state) {
     if (staticServices && staticServices->lora) {
         staticServices->lora->update(state.nowMs);
+        if (staticServices->oledDisplay) {
+            staticServices->oledDisplay->setLoraStatus(staticServices->lora->isConnected(),
+                                                       staticServices->lora->getLastRssiDbm());
+        }
     }
 }
 
