@@ -129,6 +129,8 @@ class OledDisplay {
     wifiConnected = connected;
     wifiSignalStrength = signalStrength;
   }
+  // Optional: show a tiny WiFi icon on the left header area (near battery)
+  void setShowWifiMiniIconInHeaderLeft(bool show) { showWifiMiniIcon = show; }
 
   void getContentArea(int16_t &x, int16_t &y, int16_t &w, int16_t &h) const {
     x = lastContentX;
@@ -196,6 +198,13 @@ class OledDisplay {
       drawBatteryIcon(display, battX, battY, 16, 8, showBars ? percentToDraw : 255 /*outline-only*/);
       if (batteryCharging) {
         drawChargingBolt(display, battX, battY, 16, 8);
+      }
+
+      // Optional tiny WiFi icon just to the right of battery
+      if (showWifiMiniIcon) {
+        const int16_t wifiX = battX + 16 + 4; // battery width + margin
+        const int16_t wifiY = 1;
+        drawWifiMiniIcon(display, wifiX, wifiY);
       }
     }
 
@@ -292,39 +301,98 @@ class OledDisplay {
   void drawWifiStatus(SSD1306Wire &d) {
     const int16_t topY = 0;
     const int16_t headerH = 10;
-    const int8_t bars = 4;
-    const int8_t barWidth = 2;
-    const int8_t barGap = 1;
-    const int8_t maxBarHeight = headerH - 2;
-    const int16_t totalWidth = bars * barWidth + (bars - 1) * barGap;
-    int16_t startX = d.width() - totalWidth;
+    const int16_t iconW = 14; // fixed width for WiFi fan icon
+    const int16_t startX = d.width() - iconW;
+    const int16_t cx = startX + iconW / 2;
+    const int16_t cy = topY + headerH - 1; // baseline near bottom of header
+
+    // Helper: plot upper half of a circle (simple arc) with integer math
+    auto plotUpperArc = [&](int r) {
+      for (int x = -r; x <= r; x++) {
+        int rr = r * r;
+        int xx = x * x;
+        int y = 0;
+        if (xx <= rr) {
+          // y = floor(sqrt(r^2 - x^2))
+          y = (int)sqrtf((float)(rr - xx));
+        }
+        // Thicken the arc slightly for visibility
+        d.setPixel(cx + x, cy - y);
+        if (y > 0) d.setPixel(cx + x, cy - y - 1);
+      }
+    };
+
+    // Draw base icon when disconnected: faint arcs + slash
+    if (!wifiConnected) {
+      plotUpperArc(6);
+      plotUpperArc(4);
+      plotUpperArc(2);
+      // Small dot at the base
+      d.setPixel(cx, cy);
+      d.setPixel(cx + 1, cy);
+      d.setPixel(cx, cy - 1);
+      d.setPixel(cx + 1, cy - 1);
+      // Diagonal slash to indicate disconnected
+      d.drawLine(startX, topY + 1, startX + iconW - 1, topY + headerH - 2);
+      return;
+    }
+
+    // Map 0-100% to 1..3 arcs (plus base dot)
+    uint8_t level = 0;
+    if (wifiSignalStrength >= 0) {
+      if (wifiSignalStrength <= 33) level = 1;
+      else if (wifiSignalStrength <= 66) level = 2;
+      else level = 3;
+    }
+
+    // Base dot (2x2 pixel block)
+    d.setPixel(cx, cy);
+    d.setPixel(cx + 1, cy);
+    d.setPixel(cx, cy - 1);
+    d.setPixel(cx + 1, cy - 1);
+
+    if (level >= 1) plotUpperArc(2);
+    if (level >= 2) plotUpperArc(4);
+    if (level >= 3) plotUpperArc(6);
+  }
+
+  void drawWifiMiniIcon(SSD1306Wire &d, int16_t x, int16_t y) {
+    // 10x8 mini fan-style icon with arcs and dot; draw diagonal slash if disconnected
+    const int16_t iconW = 10;
+    const int16_t cx = x + iconW / 2;
+    const int16_t cy = y + 7; // baseline at bottom of 8px box
+
+    auto plotUpperArc = [&](int r) {
+      for (int dx = -r; dx <= r; dx++) {
+        int rr = r * r;
+        int xx = dx * dx;
+        int yy = 0;
+        if (xx <= rr) yy = (int)sqrtf((float)(rr - xx));
+        d.setPixel(cx + dx, cy - yy);
+      }
+    };
+
+    // Base dot (1x2)
+    d.setPixel(cx, cy);
+    d.setPixel(cx, cy - 1);
 
     if (!wifiConnected) {
-      // Draw disconnected WiFi icon (crossed out)
-      d.drawHorizontalLine(startX, topY + maxBarHeight / 2, totalWidth);
-      d.drawVerticalLine(startX + totalWidth / 2, topY, maxBarHeight);
+      plotUpperArc(3);
+      // Slash
+      d.drawLine(x, y, x + iconW - 1, y + 7);
       return;
     }
 
     uint8_t level = 0;
     if (wifiSignalStrength >= 0) {
-      // Map signal strength 0-100% to 1-4 bars
-      if (wifiSignalStrength <= 25) level = 1;
-      else if (wifiSignalStrength <= 50) level = 2;
-      else if (wifiSignalStrength <= 75) level = 3;
-      else level = 4;
+      if (wifiSignalStrength <= 33) level = 1;
+      else if (wifiSignalStrength <= 66) level = 2;
+      else level = 3;
     }
 
-    for (int i = 0; i < bars; i++) {
-      int16_t x = startX + i * (barWidth + barGap);
-      int8_t h = (int8_t)((i + 1) * maxBarHeight / bars);
-      int16_t y = topY + (maxBarHeight - h);
-      if (i < level) {
-        d.fillRect(x, y, barWidth, h);
-      } else {
-        d.drawRect(x, y, barWidth, h);
-      }
-    }
+    if (level >= 1) plotUpperArc(2);
+    if (level >= 2) plotUpperArc(3);
+    if (level >= 3) plotUpperArc(4);
   }
 
   void drawHeaderRight(SSD1306Wire &d) {
@@ -509,6 +577,7 @@ class OledDisplay {
   uint16_t headerPeerCount = 0;
   bool wifiConnected = false;
   int8_t wifiSignalStrength = -1;
+  bool showWifiMiniIcon = false;
 
   SSD1306Wire display;
 };

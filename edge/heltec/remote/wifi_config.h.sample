@@ -1,0 +1,17 @@
+#pragma once
+
+// WiFi Configuration for Remote device - DRY Implementation
+// To enable, define WIFI_CONFIG_HEADER in your remote entry file BEFORE including common_app.h:
+//   #define WIFI_CONFIG_HEADER "../remote/wifi_config.h"
+//   #include "../lib/common_app.h"
+
+#include "../lib/wifi_config.h"
+
+// Remote-specific WiFi configuration
+static WifiManager::Config wifiConfig = WiFiConfigFactory::createRemoteConfig();
+
+// For backward compatibility, define the old constants
+static const char WIFI_SSID[] = REMOTE_WIFI_SSID;
+static const char WIFI_PASSWORD[] = REMOTE_WIFI_PASSWORD;
+
+

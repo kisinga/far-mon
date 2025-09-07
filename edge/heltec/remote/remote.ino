@@ -8,6 +8,7 @@
 #include "../lib/task_manager.h"
 #include "../lib/display_provider.h"
 #include "../lib/logo.cpp"
+#include <memory>
 
 struct HomeCtx { OledDisplay* display; };
 static HomeCtx remoteHomeCtx{};
@@ -51,7 +52,7 @@ private:
     OledDisplay oled;
     DebugRouter debugRouter;
     LoRaComm lora;
-    WifiManager wifiManager{wifiConfig};
+    std::unique_ptr<WifiManager> wifiManager;
     BatteryMonitor::BatteryMonitor batteryMonitor{batteryConfig};
     BatteryMonitor::Config batteryConfig;
 
@@ -117,7 +118,18 @@ void RemoteApplication::setupServices() {
     }
 
     // Initialize services
-    services = SystemServices::create(oled, debugRouter, wifiManager, batteryMonitor, lora);
+    // Initialize WiFi manager using centralized communication config
+    if (config.communication.wifi.enableWifi) {
+        WifiManager::Config wmConfig;
+        wmConfig.ssid = config.communication.wifi.ssid;
+        wmConfig.password = config.communication.wifi.password;
+        wmConfig.reconnectIntervalMs = config.communication.wifi.reconnectIntervalMs;
+        wmConfig.statusCheckIntervalMs = config.communication.wifi.statusCheckIntervalMs;
+        wifiManager = std::make_unique<WifiManager>(wmConfig);
+        wifiManager->begin();
+    }
+
+    services = SystemServices::create(oled, debugRouter, *wifiManager, batteryMonitor, lora);
     staticServices = &services;
 
     // Initialize LoRa
@@ -145,7 +157,7 @@ void RemoteApplication::setupTasks() {
     taskManager.registerTask("heartbeat", taskHeartbeat, config.heartbeatIntervalMs);
     taskManager.registerTask("battery", taskBatteryMonitor, 1000);
     taskManager.registerTask("display", taskDisplayUpdate, config.displayUpdateIntervalMs);
-    taskManager.registerTask("lora", taskLoRaUpdate, config.loraTaskIntervalMs);
+    taskManager.registerTask("lora", taskLoRaUpdate, 50);
     taskManager.registerTask("analog_read", taskAnalogRead, config.analogReadIntervalMs);
     taskManager.registerTask("telemetry", taskTelemetryReport, 100);
 
@@ -164,8 +176,17 @@ void RemoteApplication::taskHeartbeat(CommonAppState& state) {
 
 void RemoteApplication::taskBatteryMonitor(CommonAppState& state) {
     if (staticServices && staticServices->battery) {
+        // Update charge detection state and read percent
+        staticServices->battery->update(state.nowMs);
         uint8_t percent = staticServices->battery->getBatteryPercent();
         bool charging = staticServices->battery->isCharging();
+
+        // Push to display so header battery icon reflects current state
+        if (staticServices->display) {
+            staticServices->display->setBatteryStatus(percent <= 100, percent);
+            staticServices->display->setBatteryCharging(charging);
+        }
+
         LOGI("remote", "Battery: %d%%, Charging: %s", percent, charging ? "YES" : "NO");
     }
 }

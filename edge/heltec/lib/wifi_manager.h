@@ -71,6 +71,17 @@ public:
                      isConnected() ? WiFi.localIP().toString().c_str() : "N/A");
     }
 
+    // Uplink helper: placeholder for HTTP/MQTT/etc. Currently logs payload.
+    // Returns true if accepted for send.
+    bool uplink(const uint8_t* payload, uint8_t length) {
+        if (!payload || length == 0) return false;
+        if (!isConnected()) return false;
+        Serial.print(F("[WiFi] Uplink: "));
+        for (uint8_t i = 0; i < length; i++) Serial.write(payload[i]);
+        Serial.println();
+        return true;
+    }
+
 private:
     const Config& cfg;
     uint32_t lastReconnectAttempt = 0;
