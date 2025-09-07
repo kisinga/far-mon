@@ -5,7 +5,7 @@
 
 #include <memory>
 #include <functional>
-#include "device_config.h"
+#include "config.h"
 #include "display_provider.h"
 #include "wifi_manager.h"
 #include "battery_monitor.h"

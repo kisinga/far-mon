@@ -4,7 +4,7 @@
 #pragma once
 
 #include "transport_interface.h"
-#include "communication_config.h"
+#include "config.h"
 
 class TransportUSB : public TransportInterface {
 public:

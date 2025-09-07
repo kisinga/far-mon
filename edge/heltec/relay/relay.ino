@@ -2,7 +2,8 @@
 // Much cleaner and more maintainable than the original
 
 #include "../lib/device_config.h"
-#include "relay_config.h"
+#include "../lib/config.h"
+#include "config.h"
 #include "../lib/system_services.h"
 #include "../lib/task_manager.h"
 #include "../lib/display_provider.h"
@@ -15,6 +16,7 @@
 #include "../lib/transport_lora.h"
 #include "../lib/transport_usb.h"
 #include "../lib/transport_screen.h"
+#include "../lib/mqtt_publisher.h"
 #include <memory>
 
 struct HomeCtx { OledDisplay* display; };
@@ -29,7 +31,9 @@ static void renderRelayHome(SSD1306Wire &d, void *ctx) {
         c->display->getContentArea(cx, cy, cw, ch);
     }
     d.setTextAlignment(TEXT_ALIGN_LEFT);
-    d.drawString(cx, cy, F("Relay 01"));
+    char header[16];
+    snprintf(header, sizeof(header), "Relay %s", RELAY_DEVICE_ID);
+    d.drawString(cx, cy, header);
     d.drawString(cx, cy + 14, gRelayReady ? F("Ready") : F("Starting..."));
 }
 
@@ -67,6 +71,7 @@ private:
     std::unique_ptr<TransportLoRa> transportLora;
     std::unique_ptr<TransportUSB> transportUsb;
     std::unique_ptr<TransportScreen> transportScreen;
+    std::unique_ptr<MqttPublisher> mqtt;
 
     // Device-specific setup
     void setupDeviceConfig();
@@ -81,6 +86,7 @@ private:
     static void taskWifiMonitor(CommonAppState& state);
     static void taskLoRaUpdate(CommonAppState& state);
     static void taskPeerMonitor(CommonAppState& state);
+    static void taskMqtt(CommonAppState& state);
     static void taskRouter(CommonAppState& state);
     static void taskCommunicationManager(CommonAppState& state);
 
@@ -90,6 +96,7 @@ private:
     static LoRaComm* staticLora;
     static WifiManager* staticWifi;
     static CommunicationManager* staticCommManager;
+    static MqttPublisher* staticMqtt;
     // Simple routing ring buffer for LoRa->WiFi
     struct RouteMsg { uint8_t bytes[64]; uint8_t len; };
     static constexpr size_t kRouteQueueSize = 8;
@@ -105,6 +112,7 @@ RelayConfig* RelayApplication::staticConfig = nullptr;
 LoRaComm* RelayApplication::staticLora = nullptr;
 WifiManager* RelayApplication::staticWifi = nullptr;
 CommunicationManager* RelayApplication::staticCommManager = nullptr;
+MqttPublisher* RelayApplication::staticMqtt = nullptr;
 RelayApplication::RouteMsg RelayApplication::routeQueue[RelayApplication::kRouteQueueSize] = {};
 volatile uint8_t RelayApplication::routeHead = 0;
 volatile uint8_t RelayApplication::routeTail = 0;
@@ -125,7 +133,7 @@ void RelayApplication::run() {
 }
 
 void RelayApplication::setupDeviceConfig() {
-    config = RelayConfig::create("01");
+    config = buildRelayConfig();
 }
 
 void RelayApplication::setupServices() {
@@ -136,7 +144,7 @@ void RelayApplication::setupServices() {
 
     // Initialize OLED display
     oled.begin(true);
-    oled.setDeviceId("01");
+    oled.setDeviceId(RELAY_DEVICE_ID);
     // Keep peer count on relay header (right side)
     oled.setHeaderRightMode(HeaderRightMode::PeerCount);
     // Also show a small WiFi icon in the header-left near battery
@@ -174,6 +182,31 @@ void RelayApplication::setupServices() {
     lora.setOnDataReceived(&RelayApplication::onLoraData);
     staticServices = &services;
 
+    // Initialize MQTT publisher if enabled
+    {
+        MqttPublisherConfig mc{};
+        mc.enableMqtt = config.communication.mqtt.enableMqtt;
+        mc.brokerHost = config.communication.mqtt.brokerHost;
+        mc.brokerPort = config.communication.mqtt.brokerPort;
+        mc.clientId = config.communication.mqtt.clientId;
+        mc.username = config.communication.mqtt.username;
+        mc.password = config.communication.mqtt.password;
+        mc.baseTopic = config.communication.mqtt.baseTopic;
+        // Use deviceId by default for suffix
+        mc.deviceTopic = config.deviceId;
+        mc.qos = config.communication.mqtt.qos;
+        mc.retain = config.communication.mqtt.retain;
+        mqtt = std::make_unique<MqttPublisher>(mc);
+        mqtt->begin();
+        staticMqtt = mqtt.get();
+        CommunicationLogger::info("relay", "MQTT %s host=%s port=%u topic=%s/%s",
+                                   mc.enableMqtt ? "ENABLED" : "DISABLED",
+                                   mc.brokerHost ? mc.brokerHost : "(null)",
+                                   (unsigned)mc.brokerPort,
+                                   mc.baseTopic ? mc.baseTopic : "(null)",
+                                   mc.deviceTopic ? mc.deviceTopic : "(auto)");
+    }
+
     // Initialize Communication Manager if enabled
     if (config.communication.enableCommunicationManager) {
         setupCommunicationManager();
@@ -203,6 +236,8 @@ void RelayApplication::setupTasks() {
         taskManager.registerTask("comm_mgr", taskCommunicationManager, config.communication.updateIntervalMs);
     }
     taskManager.registerTask("peer_monitor", taskPeerMonitor, config.peerMonitorIntervalMs);
+    // MQTT maintenance
+    taskManager.registerTask("mqtt", taskMqtt, 200);
 
     // Start RTOS scheduler (no-op on non-RTOS builds)
     taskManager.start(appState);
@@ -255,7 +290,7 @@ void RelayApplication::setupCommunicationManager() {
     staticCommManager = commManager.get();
 
     // Initialize communication logger
-    CommunicationLogger::begin(commManager.get(), "01");
+    CommunicationLogger::begin(commManager.get(), staticConfig ? staticConfig->deviceId : RELAY_DEVICE_ID);
 
     CommunicationLogger::info("relay", "Communication Manager initialized with %d transports", commManager->getTransportCount());
 }
@@ -325,6 +360,13 @@ void RelayApplication::taskPeerMonitor(CommonAppState& state) {
     }
 }
 
+void RelayApplication::taskMqtt(CommonAppState& state) {
+    (void)state;
+    if (staticMqtt) {
+        staticMqtt->update(millis());
+    }
+}
+
 void RelayApplication::taskRouter(CommonAppState& state) {
     (void)state;
     if (!staticConfig || !staticLora || !staticWifi) return;
@@ -362,6 +404,14 @@ void RelayApplication::onLoraData(uint8_t srcId, const uint8_t* payload, uint8_t
     routeQueue[routeHead].len = length;
     routeHead = nextHead;
     interrupts();
+    // Also publish to MQTT if available
+    if (staticMqtt) {
+        // Use topic suffix as device id (srcId) if deviceTopic not set
+        char topicSuffix[16];
+        snprintf(topicSuffix, sizeof(topicSuffix), "%u", (unsigned)srcId);
+        CommunicationLogger::info("relay", "Publishing LoRa payload to MQTT suffix=%s len=%u", topicSuffix, (unsigned)length);
+        staticMqtt->publish(topicSuffix, payload, length);
+    }
 }
 
 // Global relay application instance

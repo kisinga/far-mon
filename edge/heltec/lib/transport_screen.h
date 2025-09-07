@@ -5,7 +5,7 @@
 
 #include "transport_interface.h"
 #include "display_provider.h"
-#include "communication_config.h"
+#include "config.h"
 
 class TransportScreen : public TransportInterface {
 public:

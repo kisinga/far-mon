@@ -2,7 +2,8 @@
 // Much cleaner and more maintainable than the original
 
 #include "../lib/device_config.h"
-#include "remote_config.h"
+#include "../lib/config.h"
+#include "config.h"
 #include "../lib/system_services.h"
 #include "../lib/task_manager.h"
 #include "../lib/display_provider.h"
@@ -22,7 +23,9 @@ static void renderRemoteHome(SSD1306Wire &d, void *ctx) {
         c->display->getContentArea(cx, cy, cw, ch);
     }
     d.setTextAlignment(TEXT_ALIGN_LEFT);
-    d.drawString(cx, cy, F("Remote 03"));
+    char header[16];
+    snprintf(header, sizeof(header), "Remote %s", REMOTE_DEVICE_ID);
+    d.drawString(cx, cy, header);
     d.drawString(cx, cy + 14, gRemoteReady ? F("Ready") : F("Starting..."));
 }
 
@@ -95,7 +98,7 @@ void RemoteApplication::run() {
 }
 
 void RemoteApplication::setupDeviceConfig() {
-    config = RemoteConfig::create("03");
+    config = buildRemoteConfig();
 }
 
 void RemoteApplication::setupServices() {
@@ -106,7 +109,7 @@ void RemoteApplication::setupServices() {
 
     // Initialize OLED display
     oled.begin(true);
-    oled.setDeviceId("03");
+    oled.setDeviceId(REMOTE_DEVICE_ID);
     oled.setHeaderRightMode(HeaderRightMode::SignalBars);
     remoteHomeCtx.display = &oled;
     oled.setHomescreenRenderer(renderRemoteHome, &remoteHomeCtx);
@@ -228,11 +231,11 @@ void RemoteApplication::taskTelemetryReport(CommonAppState& state) {
         return;
     }
 
-    // Send telemetry
+    // Send telemetry as compact JSON for MQTT-friendly consumption
     if (staticServices && staticServices->lora) {
-        char buf[48];
-        int n = snprintf(buf, sizeof(buf), "id=%s,r=%d,v=%.3f",
-                        "03", remoteState.analogRaw, remoteState.analogVoltage);
+        char buf[64];
+        int n = snprintf(buf, sizeof(buf), "{\"id\":\"%s\",\"raw\":%d,\"voltage\":%.3f}",
+                        REMOTE_DEVICE_ID, remoteState.analogRaw, remoteState.analogVoltage);
 
         if (n > 0) {
             staticServices->lora->sendData(1, (const uint8_t*)buf,

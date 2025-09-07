@@ -5,13 +5,22 @@
 //   #define WIFI_CONFIG_HEADER "../remote/wifi_config.h"
 //   #include "../lib/common_app.h"
 
-#include "../lib/wifi_config.h"
+// Per-device configuration is defined in ../remote/config.h
+#include "config.h"
 
 // Remote-specific WiFi configuration
-static WifiManager::Config wifiConfig = WiFiConfigFactory::createRemoteConfig();
+static WifiManager::Config wifiConfig = [](){
+    RemoteConfig cfg = buildRemoteConfig();
+    WifiManager::Config wm{};
+    wm.ssid = cfg.communication.wifi.ssid;
+    wm.password = cfg.communication.wifi.password;
+    wm.reconnectIntervalMs = cfg.communication.wifi.reconnectIntervalMs;
+    wm.statusCheckIntervalMs = cfg.communication.wifi.statusCheckIntervalMs;
+    return wm;
+}();
 
 // For backward compatibility, define the old constants
-static const char WIFI_SSID[] = REMOTE_WIFI_SSID;
-static const char WIFI_PASSWORD[] = REMOTE_WIFI_PASSWORD;
+static const char WIFI_SSID[] = "YourWiFiNetwork";
+static const char WIFI_PASSWORD[] = "YourWiFiPassword";
 
 

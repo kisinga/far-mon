@@ -42,19 +42,13 @@ public:
     static DeviceConfig createRelayConfig(const char* deviceId) {
         DeviceConfig config = createBaseConfig(deviceId, DeviceType::Relay);
 
-        // Relay-specific communication settings
+        // Relay-specific generic comm settings (no deployment secrets)
         config.communication.usb.enableDebug = true;
         config.communication.usb.baudRate = 115200;
 
         config.communication.lora.enableLora = true;
         config.communication.lora.frequency = 868000000UL;
         config.communication.lora.txPower = 14;
-
-        config.communication.wifi.enableWifi = true;
-        config.communication.wifi.ssid = "STARLINK";
-        config.communication.wifi.password = "awesome33";
-
-        config.communication.screen.enableScreen = true;
 
         // Set up routing rules for relay: LoRa -> WiFi, LoRa -> USB, Telemetry -> Screen
         config.communication.routing.enableRouting = true;
@@ -67,6 +61,8 @@ public:
         config.communication.routing.routeCount = 3;
 
         config.displayUpdateIntervalMs = 800;
+
+        // MQTT topic/client are set by per-device configs
         return config;
     }
 
@@ -74,7 +70,7 @@ public:
     static DeviceConfig createRemoteConfig(const char* deviceId) {
         DeviceConfig config = createBaseConfig(deviceId, DeviceType::Remote);
 
-        // Remote-specific communication settings
+        // Remote-specific generic comm settings (no deployment secrets)
         config.communication.usb.enableDebug = true;
         config.communication.usb.baudRate = 115200;
 
@@ -83,8 +79,6 @@ public:
         config.communication.lora.enableLora = true;
         config.communication.lora.frequency = 868000000UL;
         config.communication.lora.txPower = 14;
-
-        config.communication.screen.enableScreen = true;
 
         // Set up routing rules for remote: Telemetry -> LoRa
         config.communication.routing.enableRouting = true;
@@ -112,11 +106,11 @@ private:
         config.enableDisplay = true;
         config.displayUpdateIntervalMs = DEFAULT_DISPLAY_UPDATE_INTERVAL_MS;
 
-        // Initialize communication configuration with defaults
-        config.communication = CommunicationConfig::createDefault();
+        // Initialize communication configuration with neutral defaults
+        config.communication = CommunicationConfig{};
 
-        // Apply common communication settings
-        config.communication.enableCommunicationManager = true;
+        // Apply common communication settings (per-device may override)
+        config.communication.enableCommunicationManager = false;
         config.communication.updateIntervalMs = DEFAULT_ROUTING_INTERVAL_MS;
         config.communication.maxConcurrentMessages = 8;
         config.communication.enableMessageBuffering = true;

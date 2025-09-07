@@ -35,6 +35,7 @@ public:
 
     // Convenience methods
     static void error(const char* tag, const char* format, ...) {
+        if (!instance) return;
         va_list args;
         va_start(args, format);
         instance->logMessage(Level::Error, tag, format, args);
@@ -42,6 +43,7 @@ public:
     }
 
     static void warning(const char* tag, const char* format, ...) {
+        if (!instance) return;
         va_list args;
         va_start(args, format);
         instance->logMessage(Level::Warning, tag, format, args);
@@ -49,6 +51,7 @@ public:
     }
 
     static void info(const char* tag, const char* format, ...) {
+        if (!instance) return;
         va_list args;
         va_start(args, format);
         instance->logMessage(Level::Info, tag, format, args);
@@ -56,6 +59,7 @@ public:
     }
 
     static void debug(const char* tag, const char* format, ...) {
+        if (!instance) return;
         va_list args;
         va_start(args, format);
         instance->logMessage(Level::Debug, tag, format, args);
@@ -63,6 +67,7 @@ public:
     }
 
     static void verbose(const char* tag, const char* format, ...) {
+        if (!instance) return;
         va_list args;
         va_start(args, format);
         instance->logMessage(Level::Verbose, tag, format, args);

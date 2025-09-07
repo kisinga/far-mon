@@ -9,6 +9,20 @@
 // Use shared transport types
 #include "transport_types.h"
 
+// MQTT Configuration
+struct MqttConfig {
+    bool enableMqtt = false;            // Enable MQTT publishing over WiFi
+    const char* brokerHost = nullptr;   // MQTT broker hostname or IP
+    uint16_t brokerPort = 1883;         // MQTT broker port
+    const char* clientId = nullptr;     // MQTT client ID
+    const char* username = nullptr;     // Optional username
+    const char* password = nullptr;     // Optional password
+    const char* baseTopic = nullptr;    // Base topic for publishes
+    const char* deviceTopic = nullptr;  // Optional device-specific topic (defaults to deviceId)
+    uint8_t qos = 0;                    // QoS level (0/1)
+    bool retain = false;                // Retain flag
+};
+
 // USB Configuration
 struct UsbConfig {
     bool enableDebug = true;           // Enable USB debug output
@@ -47,9 +61,9 @@ struct LoraConfig {
 
 // WiFi Configuration
 struct WifiCommConfig {
-    bool enableWifi = true;            // Enable WiFi communication
-    const char* ssid = "YourWiFiNetwork";     // WiFi network name
-    const char* password = "YourWiFiPassword"; // WiFi password
+    bool enableWifi = false;           // Enable WiFi communication
+    const char* ssid = nullptr;        // WiFi network name
+    const char* password = nullptr;    // WiFi password
     uint32_t reconnectIntervalMs = 30000;    // Reconnect interval
     uint32_t statusCheckIntervalMs = 5000;   // Status check interval
 
@@ -68,7 +82,7 @@ struct WifiCommConfig {
 
 // Screen Configuration
 struct ScreenConfig {
-    bool enableScreen = true;          // Enable screen output
+    bool enableScreen = false;         // Enable screen output
     uint32_t updateIntervalMs = 1000;  // Screen update interval
     uint8_t maxLines = 8;              // Maximum lines to display
     bool enableAutoScroll = true;      // Auto-scroll old messages
@@ -78,7 +92,7 @@ struct ScreenConfig {
 
 // Routing Configuration
 struct RoutingConfig {
-    bool enableRouting = true;         // Enable message routing
+    bool enableRouting = false;        // Enable message routing
     uint32_t routingIntervalMs = 100;  // Routing task interval
 
     // Route definitions
@@ -102,48 +116,16 @@ struct CommunicationConfig {
     LoraConfig lora;
     WifiCommConfig wifi;
     ScreenConfig screen;
+    MqttConfig mqtt;
 
     // Routing configuration
     RoutingConfig routing;
 
     // Global settings
-    bool enableCommunicationManager = true; // Enable the communication manager
+    bool enableCommunicationManager = false; // Enable the communication manager
     uint32_t updateIntervalMs = 100;        // Communication manager update interval
     uint8_t maxConcurrentMessages = 8;      // Maximum concurrent messages
     bool enableMessageBuffering = true;     // Enable message buffering
     uint16_t bufferSize = 1024;             // Message buffer size (bytes)
-
-    // Factory method for default configuration
-    static CommunicationConfig createDefault();
 };
 
-// Inline default implementation to ensure Arduino links it
-inline CommunicationConfig CommunicationConfig::createDefault() {
-    CommunicationConfig config;
-
-    // USB defaults
-    config.usb.enableDebug = true;
-    config.usb.baudRate = 115200;
-    config.usb.enableTimestamp = true;
-
-    // LoRa defaults (EU868)
-    config.lora.enableLora = true;
-    config.lora.frequency = 868000000UL;
-    config.lora.txPower = 14;
-    config.lora.spreadingFactor = 7;
-
-    // WiFi defaults
-    config.wifi.enableWifi = true;
-    config.wifi.ssid = "YourWiFiNetwork";
-    config.wifi.password = "YourWiFiPassword";
-
-    // Screen defaults
-    config.screen.enableScreen = true;
-    config.screen.updateIntervalMs = 1000;
-
-    // Routing defaults
-    config.routing.enableRouting = true;
-    config.routing.routingIntervalMs = 100;
-
-    return config;
-}

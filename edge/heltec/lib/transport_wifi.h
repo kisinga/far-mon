@@ -5,7 +5,7 @@
 
 #include "transport_interface.h"
 #include "wifi_manager.h"
-#include "communication_config.h"
+#include "config.h"
 
 class TransportWiFi : public TransportInterface {
 public:
