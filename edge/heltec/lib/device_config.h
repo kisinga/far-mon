@@ -3,8 +3,8 @@
 
 #pragma once
 
-#include <cstdint>
-#include <cstring>
+#include <stdint.h>
+#include <string.h>
 #include "communication_config.h"
 
 // Device types

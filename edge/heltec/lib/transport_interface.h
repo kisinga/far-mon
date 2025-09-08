@@ -3,7 +3,7 @@
 
 #pragma once
 
-#include <cstdint>
+#include <stdint.h>
 #include "message.h"
 #include "transport_types.h"
 

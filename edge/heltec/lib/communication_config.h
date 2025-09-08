@@ -3,7 +3,7 @@
 
 #pragma once
 
-#include <cstdint>
+#include <stdint.h>
 #include "wifi_manager.h"
 #include "message.h"
 // Use shared transport types
