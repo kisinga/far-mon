@@ -77,17 +77,23 @@ setup_tailscale() {
     fi
     
     log_info "Starting Tailscale..."
-    sudo tailscale up
+    # Support non-interactive setup via TS_AUTHKEY if provided; otherwise try to reuse existing login
+    if [[ -n "${TS_AUTHKEY:-}" ]]; then
+        sudo tailscale up --authkey "$TS_AUTHKEY" --ssh --hostname "farm-pi" || true
+    else
+        sudo tailscale up --ssh --hostname "farm-pi" || true
+    fi
+
+    # If still not logged in, prompt once with clear message
+    if ! tailscale status >/dev/null 2>&1; then
+        echo ""
+        echo -e "${YELLOW}Tailscale requires authentication.${NC}"
+        echo -e "Run: ${BOLD}sudo tailscale up --authkey <tskey> --ssh --hostname farm-pi${NC}"
+        echo -e "or authenticate via the interactive flow.${NC}"
+        echo ""
+    fi
     
-    echo ""
-    echo -e "${YELLOW}Please complete Tailscale authentication in your browser."
-    echo -e "After authentication, note your Pi's Tailscale IP for Coolify setup.${NC}"
-    echo ""
-    
-    # Wait for user to complete authentication
-    read -p "Press Enter after completing Tailscale authentication..."
-    
-    TAILSCALE_IP=$(tailscale ip -4)
+    TAILSCALE_IP=$(tailscale ip -4 2>/dev/null || true)
     log_success "Tailscale setup complete. Pi IP: $TAILSCALE_IP"
 }
 
@@ -174,7 +180,15 @@ verify_setup() {
     echo -e "${BOLD}${GREEN}=== Setup Summary ===${NC}"
     echo -e "${CYAN}Tailscale IP:${NC} $(tailscale ip -4 2>/dev/null || echo 'Not available')"
     echo -e "${CYAN}Coolify:${NC} http://$(tailscale ip -4 2>/dev/null || echo 'localhost'):8000"
-    echo -e "${CYAN}WiFi Hotspot:${NC} PiHotspot (Password: SecurePassword123)"
+    # Read hotspot credentials if available
+    WIFI_ENV_FILE="$INSTALL_DIR/edge/pi/.wifi_hotspot.env"
+    if [[ -f "$WIFI_ENV_FILE" ]]; then
+        # shellcheck disable=SC1090
+        source "$WIFI_ENV_FILE"
+        echo -e "${CYAN}WiFi Hotspot:${NC} ${SSID:-PiHotspot} (Password stored in .wifi_hotspot.env)"
+    else
+        echo -e "${CYAN}WiFi Hotspot:${NC} PiHotspot (Set persistent password in edge/pi/.wifi_hotspot.env)"
+    fi
     echo -e "${CYAN}Repository:${NC} $INSTALL_DIR"
     echo ""
     echo -e "${YELLOW}To check connected Heltec devices:${NC}"

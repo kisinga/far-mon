@@ -4,13 +4,15 @@
 #include "system_services.h"
 #include "logger.h"
 
-// Battery logging macros (similar to existing LOG_EVERY_MS)
+// Battery logging macros (ensure unique static timer per callsite)
+#define __LOG_UNIQ2(name, line) name##line
+#define __LOG_UNIQ(name, line) __LOG_UNIQ2(name, line)
 #define LOG_BATTERY_EVERY_MS(interval, ...) \
     do { \
-        static uint32_t lastLogMs = 0; \
+        static uint32_t __LOG_UNIQ(__lastLogMs_, __LINE__) = 0; \
         uint32_t now = millis(); \
-        if ((now - lastLogMs) >= (interval)) { \
-            lastLogMs = now; \
+        if ((now - __LOG_UNIQ(__lastLogMs_, __LINE__)) >= (interval)) { \
+            __LOG_UNIQ(__lastLogMs_, __LINE__) = now; \
             LOGI("batt", __VA_ARGS__); \
         } \
     } while(0)

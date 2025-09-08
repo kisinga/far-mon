@@ -12,9 +12,16 @@ NC='\033[0m' # No Color (reset)
 BOLD='\033[1m'
 
 # --- Variables ---
-SSID="PiHotspot"
-PASSWORD="SecurePassword123"
-INTERFACE="wlan0" # Default wireless interface
+# Allow overrides via environment or simple .env-style file next to this script
+ENV_FILE="$(dirname "$0")/.wifi_hotspot.env"
+if [[ -f "$ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+fi
+
+SSID="${SSID:-PiHotspot}"
+PASSWORD="${PASSWORD:-ChangeMe-$(tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c 12 || echo 12345678)}"
+INTERFACE="${INTERFACE:-wlan0}" # Default wireless interface
 
 # --- Helper Functions ---
 
@@ -189,7 +196,16 @@ setup_hotspot() {
     echo ""
     echo -e "${BOLD}${BLUE}--- Hotspot Setup Complete! ---${NC}"
     log_info "SSID: ${BOLD}${SSID}${NC}"
-    log_info "Password: ${BOLD}${PASSWORD}${NC}"
+    if [[ -f "$ENV_FILE" ]]; then
+        log_info "Password: ${BOLD}(from ${ENV_FILE})${NC}"
+    else
+        log_warning "Password auto-generated for this session. Create ${ENV_FILE} to persist:"
+        echo "SSID='${SSID}'" | sudo tee "$ENV_FILE" >/dev/null
+        echo "PASSWORD='${PASSWORD}'" | sudo tee -a "$ENV_FILE" >/dev/null
+        echo "INTERFACE='${INTERFACE}'" | sudo tee -a "$ENV_FILE" >/dev/null
+        sudo chmod 600 "$ENV_FILE" || true
+        log_success "Saved credentials to ${ENV_FILE} (600)"
+    fi
     echo ""
     echo -e "${YELLOW}To check connected devices, run:${NC} ${BOLD}$0 check${NC}"
     echo ""
