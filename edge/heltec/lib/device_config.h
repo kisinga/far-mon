@@ -174,6 +174,7 @@ struct RelayConfig : DeviceConfig {
 
 // Remote configuration - now just a thin wrapper
 struct RemoteConfig : DeviceConfig {
+    // Legacy analog sensor support (for backward compatibility)
     bool enableAnalogSensor = true;
     uint8_t analogInputPin = 34;  // Default for Heltec LoRa 32 V3
     uint32_t analogReadIntervalMs = 200;

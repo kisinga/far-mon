@@ -8,6 +8,9 @@
 #include "lib/logger.h"
 #include "lib/lora_comm.h"
 #include "lib/battery_monitor.h"
+#include "sensor_interface.h"
+#include "sensor_implementations.h"
+#include "remote_sensor_config.h"
 #include "config.h"
 #include <memory>
 
@@ -45,6 +48,7 @@ public:
 private:
     // Configuration
     RemoteConfig config;
+    RemoteSensorConfig sensorConfig;
 
     // Framework components
     RemoteAppState appState;
@@ -58,10 +62,15 @@ private:
     BatteryMonitor::Config batteryConfig;
     BatteryMonitor::BatteryMonitor batteryMonitor{batteryConfig};
 
+    // Sensor system components
+    SensorManager sensorManager;
+    std::unique_ptr<LoRaBatchTransmitter> sensorTransmitter;
+
     // Device-specific setup
     void setupDeviceConfig();
     void setupServices();
     void setupTasks();
+    void setupSensors();
 
     // Task implementations
     static void taskHeartbeat(CommonAppState& state);
@@ -70,10 +79,12 @@ private:
     static void taskLoRaUpdate(CommonAppState& state);
     static void taskAnalogRead(CommonAppState& state);
     static void taskTelemetryReport(CommonAppState& state);
+    static void taskSensorUpdate(CommonAppState& state);
 
     // Static service references (for tasks)
     static SystemServices* staticServices;
     static RemoteConfig* staticConfig;
+    static RemoteApplication* staticApplication;
 
     // Device-specific methods
     static float convertAdcToVolts(int adcRaw);
@@ -82,12 +93,17 @@ private:
 // Static member initialization
 SystemServices* RemoteApplication::staticServices = nullptr;
 RemoteConfig* RemoteApplication::staticConfig = nullptr;
+RemoteApplication* RemoteApplication::staticApplication = nullptr;
 
 // Implementation
 void RemoteApplication::initialize() {
     setupDeviceConfig();
     setupServices();
+    setupSensors();
     setupTasks();
+
+    // Set static reference for tasks
+    staticApplication = this;
 
     LOGI("remote", "Remote application initialized");
 }
@@ -100,6 +116,7 @@ void RemoteApplication::run() {
 
 void RemoteApplication::setupDeviceConfig() {
     config = buildRemoteConfig();
+    sensorConfig = buildRemoteSensorConfig();
 }
 
 void RemoteApplication::setupServices() {
@@ -168,6 +185,77 @@ void RemoteApplication::setupServices() {
     LOGI("remote", "Services initialized");
 }
 
+void RemoteApplication::setupSensors() {
+    if (!sensorConfig.enableSensorSystem) {
+        LOGI("remote", "Sensor system disabled");
+        return;
+    }
+
+    LOGI("remote", "Setting up sensor system...");
+
+    // Create LoRa transmitter for sensor data
+    sensorTransmitter = std::make_unique<LoRaBatchTransmitter>(&lora, REMOTE_DEVICE_ID);
+    sensorManager.setTransmitter(std::move(sensorTransmitter));
+
+    // Configure and add sensors based on sensor config
+    if (sensorConfig.ultrasonicConfig.enabled) {
+        auto ultrasonic = SensorFactory::createUltrasonicSensor(
+            sensorConfig.ultrasonicConfig,
+            sensorConfig.pins.ultrasonicTrig,
+            sensorConfig.pins.ultrasonicEcho
+        );
+        if (sensorManager.addSensor(std::move(ultrasonic))) {
+            LOGI("remote", "Ultrasonic sensor enabled (pins: %d,%d)",
+                 sensorConfig.pins.ultrasonicTrig, sensorConfig.pins.ultrasonicEcho);
+        }
+    }
+
+    if (sensorConfig.waterLevelConfig.enabled) {
+        auto waterLevel = SensorFactory::createWaterLevelSensor(
+            sensorConfig.waterLevelConfig,
+            sensorConfig.pins.waterLevel
+        );
+        if (sensorManager.addSensor(std::move(waterLevel))) {
+            LOGI("remote", "Water level sensor enabled (pin: %d)", sensorConfig.pins.waterLevel);
+        }
+    }
+
+    if (sensorConfig.waterFlowConfig.enabled) {
+        auto waterFlow = SensorFactory::createWaterFlowSensor(
+            sensorConfig.waterFlowConfig,
+            sensorConfig.pins.waterFlow
+        );
+        if (sensorManager.addSensor(std::move(waterFlow))) {
+            LOGI("remote", "Water flow sensor enabled (pin: %d)", sensorConfig.pins.waterFlow);
+        }
+    }
+
+    if (sensorConfig.rs485Config.enabled) {
+        auto rs485 = SensorFactory::createRS485Sensor(
+            sensorConfig.rs485Config,
+            Serial1, // Use Serial1 for RS485
+            sensorConfig.pins.rs485RE,
+            sensorConfig.pins.rs485DE
+        );
+        if (sensorManager.addSensor(std::move(rs485))) {
+            LOGI("remote", "RS485 sensor enabled (RE: %d, DE: %d)",
+                 sensorConfig.pins.rs485RE, sensorConfig.pins.rs485DE);
+        }
+    }
+
+    if (sensorConfig.tempHumidityConfig.enabled) {
+        auto tempHumidity = SensorFactory::createTempHumiditySensor(
+            sensorConfig.tempHumidityConfig,
+            sensorConfig.pins.tempHumidity
+        );
+        if (sensorManager.addSensor(std::move(tempHumidity))) {
+            LOGI("remote", "Temperature/Humidity sensor enabled (pin: %d)", sensorConfig.pins.tempHumidity);
+        }
+    }
+
+    LOGI("remote", "Sensor system setup complete with %d sensors", sensorManager.getSensorCount());
+}
+
 void RemoteApplication::setupTasks() {
     // Register common tasks
     taskManager.registerTask("heartbeat", taskHeartbeat, config.heartbeatIntervalMs);
@@ -176,6 +264,11 @@ void RemoteApplication::setupTasks() {
     taskManager.registerTask("lora", taskLoRaUpdate, 50);
     taskManager.registerTask("analog_read", taskAnalogRead, config.analogReadIntervalMs);
     taskManager.registerTask("telemetry", taskTelemetryReport, 100);
+
+    // Register sensor task if sensor system is enabled
+    if (sensorConfig.enableSensorSystem) {
+        taskManager.registerTask("sensors", taskSensorUpdate, 1000); // Check sensors every second
+    }
 
     // Start RTOS scheduler (no-op on non-RTOS builds)
     taskManager.start(appState);
@@ -279,6 +372,14 @@ void RemoteApplication::taskTelemetryReport(CommonAppState& state) {
 float RemoteApplication::convertAdcToVolts(int adcRaw) {
     const float scale = 1.0f / 4095.0f;
     return (float)adcRaw * scale * 3.30f; // 3.3V reference
+}
+
+// Sensor task implementation
+void RemoteApplication::taskSensorUpdate(CommonAppState& state) {
+    if (!staticApplication) return;
+
+    // Update sensor manager with current time
+    staticApplication->sensorManager.update(state.nowMs);
 }
 
 // Global remote application instance
