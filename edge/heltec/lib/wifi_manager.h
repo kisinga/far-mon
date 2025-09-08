@@ -14,9 +14,21 @@ public:
         uint32_t statusCheckIntervalMs = 5000; // 5 seconds
     };
 
-    explicit WifiManager(const Config& config) : cfg(config) {}
+    explicit WifiManager(const Config& config) : cfg(config), initialized(false) {}
 
-    void begin() {
+    // Safe begin that prevents double initialization
+    // Returns true if initialization was performed, false if already initialized
+    bool safeBegin() {
+        if (initialized) {
+            return false; // Already initialized
+        }
+        unsafeBegin();
+        return true;
+    }
+
+private:
+    // Internal unsafe begin - should not be called directly
+    void unsafeBegin() {
         if (!cfg.ssid || !cfg.password) {
             Serial.println(F("[WiFi] No SSID/password configured"));
             return;
@@ -25,6 +37,8 @@ public:
         Serial.printf("[WiFi] Connecting to %s...\n", cfg.ssid);
         WiFi.begin(cfg.ssid, cfg.password);
         lastReconnectAttempt = millis();
+
+        initialized = true;
     }
 
     void update(uint32_t nowMs) {
@@ -86,6 +100,7 @@ private:
     const Config& cfg;
     uint32_t lastReconnectAttempt = 0;
     uint32_t lastStatusCheck = 0;
+    bool initialized;
 
     void updateCachedStatus() {
         // Cache expensive operations if needed

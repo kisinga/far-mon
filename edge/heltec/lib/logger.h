@@ -33,22 +33,24 @@ inline void begin(bool enableSerial, OledDisplay *display, const char *deviceId)
   g_deviceId = deviceId;
 }
 
-// Consolidated initialization function for common logger setup
-// Follows DRY, KISS, SOLID principles by centralizing common initialization logic
-inline void initialize(OledDisplay *display, const char *deviceId) {
+// Internal initialization function - not exposed publicly to prevent unsafe usage
+namespace internal {
+inline void initializeUnsafe(OledDisplay *display, const char *deviceId) {
   begin(true, display, deviceId);
   setLevel(Level::Info);
   setVerbose(false);
 }
+}
 
 // Safe initialization that prevents double initialization
+// This is the ONLY public initialization method - follows safe DI pattern
 // Returns true if initialization was performed, false if already initialized
 inline bool safeInitialize(OledDisplay *display, const char *deviceId) {
   // Check if already initialized by verifying display is set
   if (g_display != nullptr) {
     return false; // Already initialized
   }
-  initialize(display, deviceId);
+  internal::initializeUnsafe(display, deviceId);
   return true;
 }
 

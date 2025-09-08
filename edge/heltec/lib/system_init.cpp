@@ -10,7 +10,7 @@ void initializeSystem(SystemObjects &sys, const char *deviceId, bool enableOled,
   Serial.println();
 
   // Display Init (optional)
-  sys.oled.begin(enableOled);
+  sys.oled.safeBegin(enableOled);
   sys.oled.setDeviceId(deviceId);
   sys.oled.setHomescreenRenderer(renderHomeCb, renderHomeCtx);
   // sys.oled.setHeaderRightMode(HeaderRightMode::SignalBars); // Default for both remote/relay
@@ -58,7 +58,7 @@ void initializeSystem(SystemObjects &sys, const char *deviceId, bool enableOled,
   }
 
   // LoRa Init
-  sys.lora.begin(selfId == 0x01 ? LoRaComm::Mode::Master : LoRaComm::Mode::Slave, selfId);
+  sys.lora.safeBegin(selfId == 0x01 ? LoRaComm::Mode::Master : LoRaComm::Mode::Slave, selfId);
   sys.lora.setVerbose(false);
   sys.lora.setLogLevel((uint8_t)Logger::Level::Info);
 

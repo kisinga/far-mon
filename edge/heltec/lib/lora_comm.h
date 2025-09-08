@@ -121,12 +121,23 @@ class LoRaComm {
         lastRssiDbm(0),
         rxPendingAck(false), rxAckTargetId(0), rxAckMessageId(0),
         outboxCount(0), nextMessageId(1), awaitingAckMsgId(0), awaitingAckSrcId(0),
-        radioState(State::Idle), autoPingEnabled(true), stallActive(false) {
+        radioState(State::Idle), autoPingEnabled(true), stallActive(false), initialized(false) {
     memset(peers, 0, sizeof(peers));
   }
 
-  // Begin the radio with defaults; set initBoard=false if the app already called Mcu.begin(...)
-  void begin(Mode m, uint8_t id, bool initBoard = true) {
+  // Safe begin that prevents double initialization
+  // Returns true if initialization was performed, false if already initialized
+  bool safeBegin(Mode m, uint8_t id, bool initBoard = true) {
+    if (initialized) {
+      return false; // Already initialized
+    }
+    unsafeBegin(m, id, initBoard);
+    return true;
+  }
+
+private:
+  // Internal unsafe begin - should not be called directly
+  void unsafeBegin(Mode m, uint8_t id, bool initBoard = true) {
     mode = m;
     selfId = id;
 
@@ -152,6 +163,8 @@ class LoRaComm {
 
     getInstance() = this;
     enterRxMode();
+
+    initialized = true;
   }
 
   void setOnDataReceived(OnDataReceived cb) { onDataCb = cb; }
@@ -349,6 +362,7 @@ class LoRaComm {
   RadioEvents_t radioEvents;
   State radioState;
   bool autoPingEnabled;
+  bool initialized;
 
   bool verboseEnabled = false;
   uint8_t logLevel = (uint8_t)Logger::Level::Info;

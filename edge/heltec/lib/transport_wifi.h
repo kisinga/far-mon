@@ -27,7 +27,7 @@ public:
     // TransportInterface implementation
     bool begin() override {
         if (wifiManager) {
-            wifiManager->begin();
+            wifiManager->safeBegin();
             onConnectionStateChanged(ConnectionState::Connecting);
             return true;
         }

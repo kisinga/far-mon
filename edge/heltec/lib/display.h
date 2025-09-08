@@ -38,14 +38,26 @@ enum class HeaderRightMode : uint8_t { SignalBars = 0, PeerCount = 1, WifiStatus
 class OledDisplay {
  public:
   OledDisplay()
-      : display(OLED_I2C_ADDR, 500000, SDA_OLED, SCL_OLED, GEOMETRY_128_64, RST_OLED) {
+      : display(OLED_I2C_ADDR, 500000, SDA_OLED, SCL_OLED, GEOMETRY_128_64, RST_OLED), initialized(false) {
   }
 
   explicit OledDisplay(uint8_t i2cAddress)
-      : display(i2cAddress, 500000, SDA_OLED, SCL_OLED, GEOMETRY_128_64, RST_OLED) {
+      : display(i2cAddress, 500000, SDA_OLED, SCL_OLED, GEOMETRY_128_64, RST_OLED), initialized(false) {
   }
 
-  void begin(bool enable) {
+  // Safe begin that prevents double initialization
+  // Returns true if initialization was performed, false if already initialized
+  bool safeBegin(bool enable) {
+    if (initialized) {
+      return false; // Already initialized
+    }
+    unsafeBegin(enable);
+    return true;
+  }
+
+private:
+  // Internal unsafe begin - should not be called directly
+  void unsafeBegin(bool enable) {
     enabled = enable;
     if (!enabled) return;
     // Power on OLED rail
@@ -76,6 +88,8 @@ class OledDisplay {
     // Configure non-blocking splash; will render during tick() for splashDurationMs
     splashActive = true;
     splashStartedMs = millis();
+
+    initialized = true;
   }
 
   void setI2cClock(uint32_t hz) {
@@ -536,6 +550,7 @@ class OledDisplay {
   }
 
   bool enabled = false;
+  bool initialized;
   const char *deviceId = nullptr;
 
   int8_t vextPinOverride = -1; // -1 means use Vext macro if available

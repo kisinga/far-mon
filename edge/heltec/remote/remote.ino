@@ -106,7 +106,7 @@ void RemoteApplication::setupServices() {
     Serial.println();
 
     // Initialize OLED display
-    oled.begin(true);
+    oled.safeBegin(true);
     oled.setDeviceId(REMOTE_DEVICE_ID);
     oled.setHeaderRightMode(HeaderRightMode::SignalBars);
     remoteHomeCtx.display = &oled;
@@ -131,7 +131,7 @@ void RemoteApplication::setupServices() {
         wmConfig.statusCheckIntervalMs = config.communication.wifi.statusCheckIntervalMs;
         wifiManager = std::make_unique<WifiManager>(wmConfig);
         if (config.communication.wifi.enableWifi) {
-            wifiManager->begin();
+            wifiManager->safeBegin();
         }
     }
 
@@ -139,7 +139,7 @@ void RemoteApplication::setupServices() {
     staticServices = &services;
 
     // Initialize LoRa
-    lora.begin(LoRaComm::Mode::Slave, 3);
+    lora.safeBegin(LoRaComm::Mode::Slave, 3);
     lora.setVerbose(false);
     lora.setLogLevel((uint8_t)Logger::Level::Info);
 

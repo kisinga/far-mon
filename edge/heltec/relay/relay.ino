@@ -141,7 +141,7 @@ void RelayApplication::setupServices() {
     Serial.println();
 
     // Initialize OLED display
-    oled.begin(true);
+    oled.safeBegin(true);
     oled.setDeviceId(RELAY_DEVICE_ID);
     // Keep peer count on relay header (right side)
     oled.setHeaderRightMode(HeaderRightMode::PeerCount);
@@ -169,7 +169,7 @@ void RelayApplication::setupServices() {
         wmConfig.statusCheckIntervalMs = config.communication.wifi.statusCheckIntervalMs;
         wifiManager = std::make_unique<WifiManager>(wmConfig);
         if (config.communication.wifi.enableWifi) {
-            wifiManager->begin();
+            wifiManager->safeBegin();
         }
     }
 
@@ -214,7 +214,7 @@ void RelayApplication::setupServices() {
     }
 
     // Initialize LoRa
-    lora.begin(LoRaComm::Mode::Master, 1);
+    lora.safeBegin(LoRaComm::Mode::Master, 1);
     lora.setVerbose(false);
     lora.setLogLevel((uint8_t)Logger::Level::Info);
 
@@ -230,9 +230,8 @@ void RelayApplication::setupTasks() {
     if (config.communication.wifi.enableWifi) {
         taskManager.registerTask("wifi", taskWifiMonitor, config.communication.wifi.statusCheckIntervalMs);
     }
-    if (false) {
-        taskManager.registerTask("router", taskRouter, 100);
-    }
+    // TODO: Re-enable router task when routing functionality is implemented
+    // taskManager.registerTask("router", taskRouter, 100);
     if (config.communication.enableCommunicationManager) {
         taskManager.registerTask("comm_mgr", taskCommunicationManager, config.communication.updateIntervalMs);
     }
