@@ -180,6 +180,7 @@ struct RemoteConfig : DeviceConfig {
     uint32_t telemetryReportIntervalMs = 2000;
     float analogReferenceVoltage = 3.30f;
     uint8_t masterNodeId = 1;
+    bool useCalibratedAdc = true;  // Use analogReadMilliVolts() for better accuracy
 
     RemoteConfig() : DeviceConfig(DeviceConfigFactory::createRemoteConfig("")) {
         deviceType = DeviceType::Remote;
@@ -199,6 +200,7 @@ struct RemoteConfig : DeviceConfig {
         config.telemetryReportIntervalMs = 2000;
         config.analogReferenceVoltage = 3.30f;
         config.masterNodeId = 1;
+        config.useCalibratedAdc = true;
 
         return config;
     }

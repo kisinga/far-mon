@@ -96,7 +96,11 @@
 #endif
 
 #ifndef LORA_COMM_TX_GUARD_MS
-#define LORA_COMM_TX_GUARD_MS 4000
+#define LORA_COMM_TX_GUARD_MS 15000  // Increased from 8000ms to prevent false stuck detection
+#endif
+
+#ifndef LORA_COMM_TX_STUCK_REINIT_COUNT
+#define LORA_COMM_TX_STUCK_REINIT_COUNT 5  // Increased from 3 to reduce aggressive reinitialization
 #endif
 
 class LoRaComm {
@@ -174,7 +178,13 @@ class LoRaComm {
     // TX watchdog: recover if TX completion IRQ is missed
     if (radioState == State::Tx) {
       if ((int32_t)(nowMs - lastRadioActivityMs) > (int32_t)LORA_COMM_TX_GUARD_MS) {
-        Logger::printf(Logger::Level::Warn, "lora", "TX stuck; forcing RX");
+        LOG_EVERY_MS(1000, { Logger::printf(Logger::Level::Warn, "lora", "TX stuck; forcing RX"); });
+        txStuckConsecutive++;
+        if (txStuckConsecutive >= LORA_COMM_TX_STUCK_REINIT_COUNT) {
+          Logger::printf(Logger::Level::Warn, "lora", "Reinitializing radio after %u stuck events", (unsigned)txStuckConsecutive);
+          reinitializeRadio();
+          txStuckConsecutive = 0;
+        }
         // Treat as a soft timeout for the in-flight message
         if (currentTxMsgId != 0) {
           for (size_t i = 0; i < outboxCount; i++) {
@@ -390,6 +400,7 @@ private:
   uint16_t awaitingAckMsgId;
   uint8_t awaitingAckSrcId;
   uint16_t currentTxMsgId = 0;
+  uint8_t txStuckConsecutive = 0;
 
   PeerInfo peers[LORA_COMM_MAX_PEERS];
 
@@ -431,6 +442,22 @@ private:
     lastRadioActivityMs = millis();
     radioState = State::Idle;
     Logger::printf(Logger::Level::Debug, "lora", "TX done");
+    const uint16_t justSentMsgId = currentTxMsgId;
+    txStuckConsecutive = 0;
+    // If we just sent a non-ACK message (e.g., PING or best-effort DATA),
+    // drop it from the outbox immediately to avoid backlog growth.
+    if (justSentMsgId != 0) {
+      for (size_t i = 0; i < outboxCount; i++) {
+        OutMsg &m = outbox[i];
+        if (m.inUse && m.msgId == justSentMsgId) {
+          if (!m.requireAck) {
+            m.inUse = false;
+            compactOutbox();
+          }
+          break;
+        }
+      }
+    }
     currentTxMsgId = 0;
     enterRxMode();
   }
@@ -440,6 +467,24 @@ private:
     radioState = State::Idle;
     Logger::printf(Logger::Level::Warn, "lora", "TX timeout");
     statsTxTimeouts++;
+    const uint16_t timedOutMsgId = currentTxMsgId;
+    txStuckConsecutive = 0;
+    if (timedOutMsgId != 0) {
+      for (size_t i = 0; i < outboxCount; i++) {
+        OutMsg &m = outbox[i];
+        if (m.inUse && m.msgId == timedOutMsgId) {
+          if (m.requireAck) {
+            m.nextAttemptMs = millis() + LORA_COMM_ACK_TIMEOUT_MS;
+          } else {
+            m.inUse = false;
+            statsDropped++;
+            Logger::printf(Logger::Level::Warn, "lora", "drop (timeout) msgId=%u", m.msgId);
+          }
+          break;
+        }
+      }
+      compactOutbox();
+    }
     currentTxMsgId = 0;
     enterRxMode();
   }
@@ -553,6 +598,11 @@ private:
   }
 
   void sendFrame(uint8_t *frame, uint8_t length) {
+    // Ensure clean transition out of RX before TX
+    Radio.Sleep();
+    delay(2);
+    Radio.Standby();
+    delay(3);
     lastRadioActivityMs = millis();
     Radio.Send(frame, length);
     radioState = State::Tx;
@@ -640,6 +690,27 @@ private:
     peers[idx].peerId = peerId;
     peers[idx].lastSeenMs = nowMs;
     peers[idx].connected = true;
+  }
+
+  void reinitializeRadio() {
+    Radio.Sleep();
+    radioEvents.TxDone = &HandleTxDone;
+    radioEvents.TxTimeout = &HandleTxTimeout;
+    radioEvents.RxDone = &HandleRxDone;
+
+    Radio.Init(&radioEvents);
+    Radio.SetChannel(LORA_COMM_RF_FREQUENCY);
+    Radio.SetTxConfig(MODEM_LORA, LORA_COMM_TX_POWER_DBM, 0, LORA_COMM_BANDWIDTH,
+                      LORA_COMM_SPREADING_FACTOR, LORA_COMM_CODING_RATE,
+                      LORA_COMM_PREAMBLE_LEN, false,
+                      true, 0, 0, LORA_COMM_IQ_INVERT, 3000);
+
+    Radio.SetRxConfig(MODEM_LORA, LORA_COMM_BANDWIDTH, LORA_COMM_SPREADING_FACTOR,
+                      LORA_COMM_CODING_RATE, 0, LORA_COMM_PREAMBLE_LEN,
+                      LORA_COMM_SYMBOL_TIMEOUT, false,
+                      0, true, 0, 0, LORA_COMM_IQ_INVERT, true);
+    delay(5);
+    enterRxMode();
   }
 };
 

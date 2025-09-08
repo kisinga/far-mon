@@ -96,7 +96,7 @@ private:
     static CommunicationManager* staticCommManager;
     static MqttPublisher* staticMqtt;
     // Simple routing ring buffer for LoRa->WiFi
-    struct RouteMsg { uint8_t bytes[64]; uint8_t len; };
+    struct RouteMsg { uint8_t srcId; uint8_t len; uint8_t bytes[64]; };
     static constexpr size_t kRouteQueueSize = 8;
     static RouteMsg routeQueue[kRouteQueueSize];
     static volatile uint8_t routeHead;
@@ -193,8 +193,8 @@ void RelayApplication::setupServices() {
         mc.username = config.communication.mqtt.username;
         mc.password = config.communication.mqtt.password;
         mc.baseTopic = config.communication.mqtt.baseTopic;
-        // Use deviceId by default for suffix
-        mc.deviceTopic = config.deviceId;
+        // Use configured deviceTopic if provided; otherwise topicSuffix will be used at publish
+        mc.deviceTopic = config.communication.mqtt.deviceTopic;
         mc.qos = config.communication.mqtt.qos;
         mc.retain = config.communication.mqtt.retain;
         mqtt = std::make_unique<MqttPublisher>(mc);
@@ -257,7 +257,7 @@ void RelayApplication::setupCommunicationManager() {
     }
 
     if (config.communication.lora.enableLora) {
-        transportLora = std::make_unique<TransportLoRa>(2, LoRaComm::Mode::Master, 1, config.communication.lora);
+        transportLora = std::make_unique<TransportLoRa>(2, lora, LoRaComm::Mode::Master, 1, config.communication.lora);
         TransportLoRa::setInstance(transportLora.get()); // Set static instance for callbacks
         commManager->registerTransport(transportLora.get());
     }
@@ -370,17 +370,26 @@ void RelayApplication::taskMqtt(CommonAppState& state) {
 void RelayApplication::taskRouter(CommonAppState& state) {
     (void)state;
     if (!staticConfig || !staticLora || !staticWifi) return;
-    // WiFi dependency removed; to reintroduce, use CommunicationConfig routing rules
-    // Drain route queue and uplink via WiFi
-    while (routeHead != routeTail) {
+    // Drain a limited number of messages per tick and uplink via MQTT/WiFi
+    uint8_t processed = 0;
+    while (routeHead != routeTail && processed < 4) {
         RouteMsg msg;
         noInterrupts();
         msg = routeQueue[routeTail];
         routeTail = (uint8_t)((routeTail + 1) % kRouteQueueSize);
         interrupts();
         if (msg.len > 0) {
-            (void)staticWifi->uplink(msg.bytes, msg.len);
+            // Prefer MQTT if available and ready
+            if (staticMqtt && staticMqtt->isReady()) {
+                char topicSuffix[16];
+                snprintf(topicSuffix, sizeof(topicSuffix), "%u", (unsigned)msg.srcId);
+                staticMqtt->publish(topicSuffix, msg.bytes, msg.len);
+            } else {
+                // Fallback: WiFi uplink (placeholder)
+                (void)staticWifi->uplink(msg.bytes, msg.len);
+            }
         }
+        processed++;
     }
 }
 
@@ -391,7 +400,6 @@ void RelayApplication::taskCommunicationManager(CommonAppState& state) {
 }
 
 void RelayApplication::onLoraData(uint8_t srcId, const uint8_t* payload, uint8_t length) {
-    (void)srcId;
     if (!payload || length == 0) return;
     if (length > sizeof(RouteMsg::bytes)) length = sizeof(RouteMsg::bytes);
     uint8_t nextHead = (uint8_t)((routeHead + 1) % kRouteQueueSize);
@@ -400,18 +408,11 @@ void RelayApplication::onLoraData(uint8_t srcId, const uint8_t* payload, uint8_t
         routeTail = (uint8_t)((routeTail + 1) % kRouteQueueSize);
     }
     noInterrupts();
-    memcpy(routeQueue[routeHead].bytes, payload, length);
+    routeQueue[routeHead].srcId = srcId;
     routeQueue[routeHead].len = length;
+    memcpy(routeQueue[routeHead].bytes, payload, length);
     routeHead = nextHead;
     interrupts();
-    // Also publish to MQTT if available
-    if (staticMqtt) {
-        // Use topic suffix as device id (srcId) if deviceTopic not set
-        char topicSuffix[16];
-        snprintf(topicSuffix, sizeof(topicSuffix), "%u", (unsigned)srcId);
-        CommunicationLogger::info("relay", "Publishing LoRa payload to MQTT suffix=%s len=%u", topicSuffix, (unsigned)length);
-        staticMqtt->publish(topicSuffix, payload, length);
-    }
 }
 
 // Global relay application instance

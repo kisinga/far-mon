@@ -1,14 +1,20 @@
-// MQTT Publisher - Minimal wrapper with optional PubSubClient integration
-// If PubSubClient is not available, falls back to Serial logging.
+// MQTT Publisher - Wrapper using 256dpi arduino-mqtt when available
+// Falls back to Serial logging if the library is not installed
 
 #pragma once
 
 #include <Arduino.h>
 #include <WiFi.h>
 
-// Enable PubSubClient usage by defining ENABLE_PUBSUBCLIENT at build time
-#ifdef ENABLE_PUBSUBCLIENT
-#include <PubSubClient.h>
+// Enable 256dpi MQTT if available or when ENABLE_ARDUINO_MQTT is defined
+#if defined(ENABLE_ARDUINO_MQTT)
+#define MQTT_USE_256DPI 1
+#endif
+#if !defined(MQTT_USE_256DPI) && defined(__has_include)
+#if __has_include(<MQTT.h>)
+#include <MQTT.h>
+#define MQTT_USE_256DPI 1
+#endif
 #endif
 
 struct MqttPublisherConfig {
@@ -42,10 +48,12 @@ public:
         Serial.print(F(" deviceTopic=")); Serial.print((cfg.deviceTopic && cfg.deviceTopic[0] != '\0') ? cfg.deviceTopic : "(auto)");
         Serial.print(F(" qos=")); Serial.print((unsigned)cfg.qos);
         Serial.print(F(" retain=")); Serial.println(cfg.retain ? F("true") : F("false"));
-#ifdef ENABLE_PUBSUBCLIENT
+#ifdef MQTT_USE_256DPI
         wifiClient = std::make_unique<WiFiClient>();
-        client = std::make_unique<PubSubClient>(*wifiClient);
-        client->setServer(cfg.brokerHost, cfg.brokerPort);
+        client = std::make_unique<MQTTClient>();
+        client->begin(cfg.brokerHost, cfg.brokerPort, *wifiClient);
+        // Conservative timings: keepAlive 10s, cleanSession, 1000ms command timeout
+        client->setOptions(10, true, 1000);
 #endif
         lastConnAttemptMs = 0;
     }
@@ -58,7 +66,7 @@ public:
             lastWifiConnected = wifiUp;
         }
         if (!wifiUp) return;
-#ifdef ENABLE_PUBSUBCLIENT
+#ifdef MQTT_USE_256DPI
         if (client) {
             bool mqttUp = client->connected();
             if (mqttUp != lastMqttConnected) {
@@ -67,8 +75,11 @@ public:
             }
             if (!mqttUp) {
                 if ((int32_t)(nowMs - lastConnAttemptMs) >= 0) {
+                    // Attempt reconnect with short timeout; avoid tight loops
+                    yield();
                     reconnect();
-                    lastConnAttemptMs = nowMs + 3000; // retry every 3s
+                    yield();
+                    lastConnAttemptMs = nowMs + 5000; // retry every 5s
                 }
                 return;
             }
@@ -80,7 +91,7 @@ public:
     bool isReady() const {
         if (!cfg.enableMqtt) return false;
         if (WiFi.status() != WL_CONNECTED) return false;
-#ifdef ENABLE_PUBSUBCLIENT
+#ifdef MQTT_USE_256DPI
         return client && client->connected();
 #else
         return false;
@@ -100,9 +111,9 @@ public:
             snprintf(topic, sizeof(topic), "%s", cfg.baseTopic ? cfg.baseTopic : "farm/telemetry");
         }
 
-#ifdef ENABLE_PUBSUBCLIENT
+#ifdef MQTT_USE_256DPI
         if (client && client->connected()) {
-            bool ok = client->publish(topic, payload, length, cfg.retain);
+            bool ok = client->publish(topic, (const char*)payload, (int)length, cfg.retain, (int)cfg.qos);
             if (!ok) {
                 Serial.printf("[MQTT] Publish failed to %s\n", topic);
             } else {
@@ -125,16 +136,20 @@ private:
     uint32_t lastConnAttemptMs = 0;
     bool lastWifiConnected = false;
     bool lastMqttConnected = false;
-#ifdef ENABLE_PUBSUBCLIENT
+#ifdef MQTT_USE_256DPI
     std::unique_ptr<WiFiClient> wifiClient;
-    std::unique_ptr<PubSubClient> client;
+    std::unique_ptr<MQTTClient> client;
 
     void reconnect() {
         if (!client) return;
+        // Ensure short command timeout is applied on reconnect path as well
+        client->setOptions(10, true, 1000);
         Serial.printf("[MQTT] Connecting to %s:%u as %s...\n", cfg.brokerHost, (unsigned)cfg.brokerPort, cfg.clientId ? cfg.clientId : "device");
         bool ok;
         if (cfg.username && cfg.password) {
             ok = client->connect(cfg.clientId ? cfg.clientId : "device", cfg.username, cfg.password);
+        } else if (cfg.username && !cfg.password) {
+            ok = client->connect(cfg.clientId ? cfg.clientId : "device", cfg.username, "");
         } else {
             ok = client->connect(cfg.clientId ? cfg.clientId : "device");
         }

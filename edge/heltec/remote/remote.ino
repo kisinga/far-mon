@@ -73,6 +73,7 @@ private:
 
     // Static service references (for tasks)
     static SystemServices* staticServices;
+    static RemoteConfig* staticConfig;
 
     // Device-specific methods
     static float convertAdcToVolts(int adcRaw);
@@ -80,6 +81,7 @@ private:
 
 // Static member initialization
 SystemServices* RemoteApplication::staticServices = nullptr;
+RemoteConfig* RemoteApplication::staticConfig = nullptr;
 
 // Implementation
 void RemoteApplication::initialize() {
@@ -138,19 +140,25 @@ void RemoteApplication::setupServices() {
 
     services = SystemServices::create(oled, *wifiManager, batteryMonitor, lora);
     staticServices = &services;
+    staticConfig = &config;
 
     // Initialize LoRa
     lora.safeBegin(LoRaComm::Mode::Slave, 3);
     lora.setVerbose(false);
     lora.setLogLevel((uint8_t)Logger::Level::Info);
+    // Disable auto ping to reduce contention and simplify traffic
+    lora.setAutoPingEnabled(false);
 
     // Initialize analog pin
     pinMode(config.analogInputPin, INPUT);
 
+    // Configure ADC attenuation for better voltage range (0-3.3V)
+    analogSetPinAttenuation(config.analogInputPin, ADC_11db);
+
     // Seed random for jitter
     randomSeed((uint32_t)millis());
 
-    // Initialize first report time
+    // Initialize first report time (respect configured interval)
     const int32_t jitter = (int32_t)((int32_t)config.telemetryReportIntervalMs / 5);
     const int32_t delta = (int32_t)config.telemetryReportIntervalMs + (int32_t)random(-jitter, jitter + 1);
     RemoteAppState& remoteState = static_cast<RemoteAppState&>(appState);
@@ -217,9 +225,19 @@ void RemoteApplication::taskLoRaUpdate(CommonAppState& state) {
 void RemoteApplication::taskAnalogRead(CommonAppState& state) {
     // Read analog sensor - cast to access remote-specific fields
     RemoteAppState& remoteState = static_cast<RemoteAppState&>(state);
-    const int raw = analogRead(34); // Using hardcoded pin for now
+
+    // Use configured analog pin from config
+    int raw = 0;
+    if (staticConfig->useCalibratedAdc) {
+        // Use calibrated millivolt reading for better accuracy
+        raw = analogReadMilliVolts(staticConfig->analogInputPin);
+        remoteState.analogVoltage = (float)raw / 1000.0f; // Convert mV to V
+    } else {
+        // Use raw ADC reading
+        raw = analogRead(staticConfig->analogInputPin);
+        remoteState.analogVoltage = convertAdcToVolts(raw);
+    }
     remoteState.analogRaw = raw;
-    remoteState.analogVoltage = convertAdcToVolts(raw);
 
     LOGI("remote", "Analog: raw=%d, voltage=%.3fV", raw, remoteState.analogVoltage);
 }
@@ -233,7 +251,7 @@ void RemoteApplication::taskTelemetryReport(CommonAppState& state) {
         return;
     }
 
-    // Send telemetry as compact JSON for MQTT-friendly consumption
+    // Send telemetry as compact JSON for MQTT-friendly consumption (no ACK to simplify)
     if (staticServices && staticServices->lora) {
         char buf[64];
         int n = snprintf(buf, sizeof(buf), "{\"id\":\"%s\",\"raw\":%d,\"voltage\":%.3f}",
@@ -241,14 +259,14 @@ void RemoteApplication::taskTelemetryReport(CommonAppState& state) {
 
         if (n > 0) {
             staticServices->lora->sendData(1, (const uint8_t*)buf,
-                                          (uint8_t)min(n, (int)sizeof(buf) - 1), true);
+                                          (uint8_t)min(n, (int)sizeof(buf) - 1), false);
             LOGI("remote", "Telemetry sent: %s", buf);
         }
     }
 
     // Schedule next report with jitter
-    const int32_t jitter = (int32_t)((int32_t)2000 / 5); // 2 second interval
-    const int32_t delta = 2000 + (int32_t)random(-jitter, jitter + 1);
+    const int32_t jitter = (int32_t)((int32_t)staticConfig->telemetryReportIntervalMs / 5);
+    const int32_t delta = (int32_t)staticConfig->telemetryReportIntervalMs + (int32_t)random(-jitter, jitter + 1);
     remoteState.nextReportDueMs = millis() + (uint32_t)max(100, (int)delta);
 }
 

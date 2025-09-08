@@ -28,11 +28,27 @@ public:
     
     // Public update API used by services/transports
     void update(uint32_t nowMs) {
-        // Periodic reconnection attempts if disconnected
-        if (!isConnected() && (nowMs - lastReconnectAttempt >= cfg.reconnectIntervalMs)) {
-            Serial.println(F("[WiFi] Reconnecting..."));
-            WiFi.reconnect();
-            lastReconnectAttempt = nowMs;
+        // Periodic reconnection attempts with backoff if disconnected
+        if (!isConnected()) {
+            // Initialize backoff window on first use
+            if (currentReconnectBackoffMs == 0) {
+                currentReconnectBackoffMs = cfg.reconnectIntervalMs > 0 ? cfg.reconnectIntervalMs : 1000;
+                if (currentReconnectBackoffMs > kMaxReconnectBackoffMs) currentReconnectBackoffMs = kMaxReconnectBackoffMs;
+            }
+
+            if (nowMs - lastReconnectAttempt >= currentReconnectBackoffMs) {
+                Serial.println(F("[WiFi] Reconnecting..."));
+                WiFi.reconnect();
+                lastReconnectAttempt = nowMs;
+
+                // Exponential backoff capped at 15s
+                uint32_t next = currentReconnectBackoffMs * 2;
+                currentReconnectBackoffMs = next > kMaxReconnectBackoffMs ? kMaxReconnectBackoffMs : next;
+            }
+        } else {
+            // Reset backoff once connected
+            currentReconnectBackoffMs = cfg.reconnectIntervalMs > 0 ? cfg.reconnectIntervalMs : 1000;
+            if (currentReconnectBackoffMs > kMaxReconnectBackoffMs) currentReconnectBackoffMs = kMaxReconnectBackoffMs;
         }
 
         // Update cached status periodically
@@ -93,6 +109,8 @@ private:
         Serial.printf("[WiFi] Connecting to %s...\n", cfg.ssid);
         WiFi.begin(cfg.ssid, cfg.password);
         lastReconnectAttempt = millis();
+        currentReconnectBackoffMs = cfg.reconnectIntervalMs > 0 ? cfg.reconnectIntervalMs : 1000;
+        if (currentReconnectBackoffMs > kMaxReconnectBackoffMs) currentReconnectBackoffMs = kMaxReconnectBackoffMs;
 
         initialized = true;
     }
@@ -102,6 +120,8 @@ private:
     uint32_t lastReconnectAttempt = 0;
     uint32_t lastStatusCheck = 0;
     bool initialized;
+    uint32_t currentReconnectBackoffMs = 0; // dynamic backoff interval (ms)
+    static constexpr uint32_t kMaxReconnectBackoffMs = 15000; // 15 seconds cap
 
     void updateCachedStatus() {
         // Cache expensive operations if needed

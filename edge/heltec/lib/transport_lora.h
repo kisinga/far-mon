@@ -9,8 +9,8 @@
 
 class TransportLoRa : public TransportInterface {
 public:
-    TransportLoRa(uint8_t id, LoRaComm::Mode mode, uint8_t deviceId, const LoraConfig& loraConfig)
-        : TransportInterface(TransportType::LoRa, id), loraMode(mode), deviceId(deviceId), config(loraConfig) {}
+    TransportLoRa(uint8_t id, LoRaComm& loraRef, LoRaComm::Mode mode, uint8_t deviceId, const LoraConfig& loraConfig)
+        : TransportInterface(TransportType::LoRa, id), lora(&loraRef), loraMode(mode), deviceId(deviceId), config(loraConfig) {}
 
     ~TransportLoRa() override {
         end();
@@ -18,15 +18,16 @@ public:
 
     // TransportInterface implementation
     bool begin() override {
-        lora.begin(loraMode, deviceId);
-        lora.setOnDataReceived(&TransportLoRa::onLoraDataStatic);
-        lora.setOnAckReceived(&TransportLoRa::onLoraAckStatic);
+        if (lora == nullptr) return false;
+        lora->safeBegin(loraMode, deviceId);
+        lora->setOnDataReceived(&TransportLoRa::onLoraDataStatic);
+        lora->setOnAckReceived(&TransportLoRa::onLoraAckStatic);
         onConnectionStateChanged(ConnectionState::Connected); // LoRa is always "connected"
         return true;
     }
 
     void update(uint32_t nowMs) override {
-        lora.tick(nowMs);
+        if (lora) lora->tick(nowMs);
     }
 
     void end() override {
@@ -37,10 +38,11 @@ public:
         if (!canSendMessage()) return false;
 
         // Send via LoRa
-        bool result = lora.sendData(message.getMetadata().destinationId,
-                                   message.getPayload(),
-                                   message.getLength(),
-                                   message.getMetadata().requiresAck);
+        if (!lora) return false;
+        bool result = lora->sendData(message.getMetadata().destinationId,
+                                     message.getPayload(),
+                                     message.getLength(),
+                                     message.getMetadata().requiresAck);
 
         if (result) {
             Serial.printf("[LoRa] Sent %d bytes to %d\n",
@@ -68,14 +70,14 @@ public:
     const char* getName() const override { return "LoRa"; }
 
     // LoRa-specific methods
-    LoRaComm& getLoraComm() { return lora; }
-    const LoRaComm& getLoraComm() const { return lora; }
+    LoRaComm& getLoraComm() { return *lora; }
+    const LoRaComm& getLoraComm() const { return *lora; }
 
     // Public method to set the instance (for callback setup)
     static void setInstance(TransportLoRa* inst) { instance = inst; }
 
 private:
-    LoRaComm lora;
+    LoRaComm* lora;
     LoRaComm::Mode loraMode;
     uint8_t deviceId;
     const LoraConfig& config;
