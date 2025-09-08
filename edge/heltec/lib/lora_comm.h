@@ -175,6 +175,25 @@ class LoRaComm {
     if (radioState == State::Tx) {
       if ((int32_t)(nowMs - lastRadioActivityMs) > (int32_t)LORA_COMM_TX_GUARD_MS) {
         Logger::printf(Logger::Level::Warn, "lora", "TX stuck; forcing RX");
+        // Treat as a soft timeout for the in-flight message
+        if (currentTxMsgId != 0) {
+          for (size_t i = 0; i < outboxCount; i++) {
+            OutMsg &m = outbox[i];
+            if (m.inUse && m.msgId == currentTxMsgId) {
+              if (m.requireAck) {
+                m.nextAttemptMs = nowMs + LORA_COMM_ACK_TIMEOUT_MS;
+              } else {
+                // Non-ACK (e.g., PING): drop to prevent log spam and backlog
+                m.inUse = false;
+                statsDropped++;
+                Logger::printf(Logger::Level::Warn, "lora", "drop (stuck) msgId=%u", m.msgId);
+              }
+              break;
+            }
+          }
+          compactOutbox();
+          currentTxMsgId = 0;
+        }
         Radio.Sleep();
         radioState = State::Idle;
         enterRxMode();
@@ -229,6 +248,7 @@ class LoRaComm {
         Logger::printf(Logger::Level::Debug, "lora", "TX %s to=%u msgId=%u%s",
                        (m.type == FrameType::Data ? "DATA" : "PING"), m.destId, m.msgId,
                        (m.requireAck ? " waitAck" : ""));
+        currentTxMsgId = m.msgId;
         sendFrame(m.buf, m.length);
         return;
       }
@@ -369,6 +389,7 @@ private:
   uint16_t nextMessageId;
   uint16_t awaitingAckMsgId;
   uint8_t awaitingAckSrcId;
+  uint16_t currentTxMsgId = 0;
 
   PeerInfo peers[LORA_COMM_MAX_PEERS];
 
@@ -410,6 +431,7 @@ private:
     lastRadioActivityMs = millis();
     radioState = State::Idle;
     Logger::printf(Logger::Level::Debug, "lora", "TX done");
+    currentTxMsgId = 0;
     enterRxMode();
   }
 
@@ -418,6 +440,7 @@ private:
     radioState = State::Idle;
     Logger::printf(Logger::Level::Warn, "lora", "TX timeout");
     statsTxTimeouts++;
+    currentTxMsgId = 0;
     enterRxMode();
   }
 

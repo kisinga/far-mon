@@ -13,9 +13,9 @@ inline RelayConfig buildRelayConfig() {
     cfg.communication.wifi.password = "awesome33";
 
     cfg.communication.mqtt.enableMqtt = true;
-    cfg.communication.mqtt.brokerHost = "192.168.1.180";
+    cfg.communication.mqtt.brokerHost = "broker.mqtt.cool";
     cfg.communication.mqtt.brokerPort = 1883;
-    cfg.communication.mqtt.baseTopic = "farm/telemetry";
+    cfg.communication.mqtt.baseTopic = "farm/tester";
     cfg.communication.mqtt.clientId = RELAY_DEVICE_ID;
     cfg.communication.mqtt.deviceTopic = RELAY_DEVICE_ID;
 
