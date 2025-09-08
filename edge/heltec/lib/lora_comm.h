@@ -88,11 +88,15 @@
 // Optional jittered ping window for slaves. If defined, ping cadence is randomized
 // between MIN and MAX inclusive. Presence is also piggybacked on DATA uplinks.
 #ifndef LORA_COMM_SLAVE_PING_MIN_MS
-#define LORA_COMM_SLAVE_PING_MIN_MS 30000
+#define LORA_COMM_SLAVE_PING_MIN_MS 5000
 #endif
 
 #ifndef LORA_COMM_SLAVE_PING_MAX_MS
-#define LORA_COMM_SLAVE_PING_MAX_MS 120000
+#define LORA_COMM_SLAVE_PING_MAX_MS 10000
+#endif
+
+#ifndef LORA_COMM_TX_GUARD_MS
+#define LORA_COMM_TX_GUARD_MS 4000
 #endif
 
 class LoRaComm {
@@ -148,7 +152,8 @@ class LoRaComm {
   void setAutoPingEnabled(bool enabled) { autoPingEnabled = enabled; }
   bool sendData(uint8_t destId, const uint8_t *payload, uint8_t length, bool requireAck = true) {
     if (length > maxAppPayload()) return false;
-    if (outboxCount >= LORA_COMM_MAX_OUTBOX) return false;
+    // Reserve one slot for housekeeping (e.g., PING) to preserve presence
+    if (outboxCount >= (uint8_t)(LORA_COMM_MAX_OUTBOX - 1)) return false;
 
     OutMsg &m = outbox[outboxCount++];
     m.inUse = true;
@@ -166,12 +171,27 @@ class LoRaComm {
   void tick(uint32_t nowMs) {
     lastNowMs = nowMs;
     Radio.IrqProcess();
+    // TX watchdog: recover if TX completion IRQ is missed
+    if (radioState == State::Tx) {
+      if ((int32_t)(nowMs - lastRadioActivityMs) > (int32_t)LORA_COMM_TX_GUARD_MS) {
+        Logger::printf(Logger::Level::Warn, "lora", "TX stuck; forcing RX");
+        Radio.Sleep();
+        radioState = State::Idle;
+        enterRxMode();
+      }
+    }
     // Automatic slave ping (jittered and infrequent)
     if (mode == Mode::Slave && autoPingEnabled) {
       if ((int32_t)(nowMs - lastPingSentMs) >= 0) {
-        (void)sendPing();
-        const uint32_t window = (uint32_t)random((long)LORA_COMM_SLAVE_PING_MIN_MS, (long)LORA_COMM_SLAVE_PING_MAX_MS + 1);
-        lastPingSentMs = nowMs + window;
+        const bool enqOk = sendPing();
+        if (enqOk) {
+          const uint32_t window = (uint32_t)random((long)LORA_COMM_SLAVE_PING_MIN_MS, (long)LORA_COMM_SLAVE_PING_MAX_MS + 1);
+          lastPingSentMs = nowMs + window;
+        } else {
+          // Outbox full: retry ping soon to restore presence quickly once space frees up
+          lastPingSentMs = nowMs + 1000; // 1s backoff
+          Logger::printf(Logger::Level::Warn, "lora", "PING skipped (outbox=%u)", outboxCount);
+        }
       }
     } else {
       // Update master peer TTLs
@@ -510,20 +530,34 @@ private:
   }
 
   void sendFrame(uint8_t *frame, uint8_t length) {
+    lastRadioActivityMs = millis();
     Radio.Send(frame, length);
     radioState = State::Tx;
   }
 
   int selectNextOutboxIndex(uint32_t nowMs) {
-    // Prefer messages that are due for retry or never attempted yet
+    // 1) Prefer retries that are due
+    int bestIdx = -1;
+    uint32_t bestDue = 0;
+    for (int i = 0; i < (int)outboxCount; i++) {
+      OutMsg &m = outbox[i];
+      if (!m.inUse) continue;
+      if (m.requireAck && m.attempts > 0 && m.attempts < LORA_COMM_MAX_RETRIES) {
+        if ((int32_t)(nowMs - m.nextAttemptMs) >= 0) {
+          // Due now; choose the earliest due
+          if (bestIdx < 0 || m.nextAttemptMs - nowMs < bestDue) {
+            bestIdx = i;
+            bestDue = (uint32_t)(m.nextAttemptMs - nowMs);
+          }
+        }
+      }
+    }
+    if (bestIdx >= 0) return bestIdx;
+    // 2) Then send never-attempted messages (including PING)
     for (int i = 0; i < (int)outboxCount; i++) {
       OutMsg &m = outbox[i];
       if (!m.inUse) continue;
       if (m.attempts == 0) return i;
-      if (m.requireAck && (int32_t)(nowMs - m.nextAttemptMs) >= 0 && m.attempts < LORA_COMM_MAX_RETRIES) {
-        return i;
-      }
-      if (!m.requireAck && m.attempts == 0) return i;
     }
     return -1;
   }
