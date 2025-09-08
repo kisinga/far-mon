@@ -3,7 +3,6 @@
 #include <Arduino.h>
 #include "board_config.h"
 #include "display.h"
-#include "debug.h"
 #include "logger.h"
 #include "lora_comm.h"
 #include "battery_monitor.h"
@@ -12,7 +11,6 @@
 // A helper struct to hold references to all global objects that need initialization
 struct SystemObjects {
   OledDisplay &oled;
-  DebugRouter &debugRouter;
   LoRaComm &lora;
   BatteryMonitor::BatteryMonitor &batteryMonitor;
   BatteryMonitor::Config &batteryConfig;

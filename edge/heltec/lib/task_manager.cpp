@@ -2,7 +2,6 @@
 
 #include "task_manager.h"
 #include "system_services.h"
-#include "debug.h"
 #include "logger.h"
 
 // Battery logging macros (similar to existing LOG_EVERY_MS)
@@ -17,10 +16,10 @@
     } while(0)
 
 // Common task implementations
-static void taskHeartbeat(CommonAppState& state, DebugRouter& debugRouter, IDisplayService& display, const char* deviceTypeStr) {
+static void taskHeartbeat(CommonAppState& state, IDisplayService& display, const char* deviceTypeStr) {
     state.heartbeatOn = !state.heartbeatOn;
 
-    debugRouter.debugFor(
+    Logger::debugFor(
         [&display, deviceTypeStr](SSD1306Wire& d, void* ctx) {
             (void)ctx;
             int16_t cx, cy, cw, ch;
@@ -81,11 +80,11 @@ static void taskLoRaUpdate(CommonAppState& state, ILoRaService& lora) {
 // Register common tasks based on device configuration
 void TaskManager::registerCommonTasks(const DeviceConfig& config, SystemServices& services) {
     // Always register heartbeat task
-    if (services.debugRouter && services.display) {
+    if (services.display) {
         const char* deviceTypeStr = (config.deviceType == DeviceType::Relay) ? "Master" : "Slave";
         registerTask("heartbeat",
             [deviceTypeStr, &services](CommonAppState& state) {
-                taskHeartbeat(state, *services.debugRouter, *services.display, deviceTypeStr);
+                taskHeartbeat(state, *services.display, deviceTypeStr);
             },
             config.heartbeatIntervalMs);
     }

@@ -7,7 +7,6 @@
 #include "../lib/system_services.h"
 #include "../lib/task_manager.h"
 #include "../lib/display_provider.h"
-#include "../lib/debug.h"
 #include "../lib/logo.cpp"
 #include <memory>
 
@@ -53,7 +52,6 @@ private:
 
     // Hardware components
     OledDisplay oled;
-    DebugRouter debugRouter;
     LoRaComm lora;
     std::unique_ptr<WifiManager> wifiManager;
     BatteryMonitor::BatteryMonitor batteryMonitor{batteryConfig};
@@ -120,6 +118,9 @@ void RemoteApplication::setupServices() {
         oled.i2cScan(Serial);
     }
 
+    // Initialize Logger (with display support for debug overlays)
+    Logger::safeInitialize(&oled, REMOTE_DEVICE_ID);
+
     // Initialize services
     // Always create a WifiManager instance; enable begin() only if WiFi is enabled
     {
@@ -134,7 +135,7 @@ void RemoteApplication::setupServices() {
         }
     }
 
-    services = SystemServices::create(oled, debugRouter, *wifiManager, batteryMonitor, lora);
+    services = SystemServices::create(oled, *wifiManager, batteryMonitor, lora);
     staticServices = &services;
 
     // Initialize LoRa

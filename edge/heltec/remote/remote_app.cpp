@@ -29,18 +29,13 @@ void RemoteApplication::onLoraAck(uint8_t src, uint16_t msgId) {
     (void)msgId;
     lastAckSrc = src;
 
-    if (remoteInstance) {
-        auto& services = remoteInstance->getServices();
-        if (services.debugRouter) {
-            services.debugRouter->debugFor(
-                renderAckDisplay,
-                nullptr,
-                nullptr,
-                nullptr,
-                600
-            );
-        }
-    }
+    Logger::debugFor(
+        renderAckDisplay,
+        nullptr,
+        nullptr,
+        nullptr,
+        600
+    );
 }
 
 RemoteApplication::RemoteApplication() {

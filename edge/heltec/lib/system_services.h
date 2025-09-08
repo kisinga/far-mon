@@ -14,7 +14,6 @@
 
 // Forward declarations
 class OledDisplay;
-class DebugRouter;
 
 // Service interfaces
 class IBatteryService {
@@ -174,11 +173,9 @@ struct SystemServices {
 
     // References to concrete objects for tasks that need them
     OledDisplay* oledDisplay = nullptr;
-    DebugRouter* debugRouter = nullptr;
 
     // Factory method for creating services
     static SystemServices create(OledDisplay& oledDisplay,
-                                DebugRouter& debugRouter,
                                 WifiManager& wifiManager,
                                 BatteryMonitor::BatteryMonitor& batteryMonitor,
                                 LoRaComm& loraComm) {
@@ -191,7 +188,6 @@ struct SystemServices {
 
         // Store references for tasks that need direct access
         services.oledDisplay = &oledDisplay;
-        services.debugRouter = &debugRouter;
 
         return services;
     }

@@ -9,21 +9,16 @@ void initializeSystem(SystemObjects &sys, const char *deviceId, bool enableOled,
   delay(200);
   Serial.println();
 
-  // Logger Init
-  Logger::begin(true, &sys.oled, deviceId);
-  Logger::setLevel(Logger::Level::Info);
-  Logger::setVerbose(false);
-  LOGI("boot", "System starting...");
-
   // Display Init (optional)
   sys.oled.begin(enableOled);
   sys.oled.setDeviceId(deviceId);
   sys.oled.setHomescreenRenderer(renderHomeCb, renderHomeCtx);
   // sys.oled.setHeaderRightMode(HeaderRightMode::SignalBars); // Default for both remote/relay
 
-  // Debug Router Init
-  sys.debugRouter.begin(true, &sys.oled, deviceId);
-  // NOTE: remote.ino disables serial output for DebugRouter. This can be a parameter if needed.
+  // Logger Init (with display support for debug overlays)
+  // Use safeInitialize to prevent double initialization when called by both system and device code
+  Logger::safeInitialize(&sys.oled, deviceId);
+  LOGI("boot", "System starting...");
 
   // Battery Config
   sys.batteryConfig.adcPin = BATTERY_ADC_PIN;      // VBAT_ADC

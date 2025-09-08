@@ -7,7 +7,6 @@
 #include "../lib/system_services.h"
 #include "../lib/task_manager.h"
 #include "../lib/display_provider.h"
-#include "../lib/debug.h"
 #include "../lib/wifi_manager.h"
 #include "../lib/logo.cpp"
 #include "../lib/communication_manager.h"
@@ -59,7 +58,6 @@ private:
 
     // Hardware components
     OledDisplay oled;
-    DebugRouter debugRouter;
     LoRaComm lora;
     std::unique_ptr<WifiManager> wifiManager;
     BatteryMonitor::BatteryMonitor batteryMonitor{batteryConfig};
@@ -158,6 +156,9 @@ void RelayApplication::setupServices() {
         oled.i2cScan(Serial);
     }
 
+    // Initialize Logger (with display support for debug overlays)
+    Logger::safeInitialize(&oled, RELAY_DEVICE_ID);
+
     // Initialize services
     // Initialize WiFi manager using centralized communication config
     {
@@ -173,7 +174,7 @@ void RelayApplication::setupServices() {
     }
 
     // Create services using a guaranteed WifiManager instance (may be uninitialized)
-    services = SystemServices::create(oled, debugRouter, *wifiManager, batteryMonitor, lora);
+    services = SystemServices::create(oled, *wifiManager, batteryMonitor, lora);
     staticWifi = wifiManager.get();
 
     staticConfig = &config;

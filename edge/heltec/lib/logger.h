@@ -1,11 +1,15 @@
-// Header-only simple logger with verbosity and optional OLED overlay
+// Header-only simple logger with verbosity, OLED overlay, and debug routing capabilities
 // - Centralizes Serial and OLED logging
+// - Supports temporary debug overlays with duration
 // - Default: verbose=false; level=Info; Serial on
 
 #pragma once
 
 #include <Arduino.h>
 #include "display.h"
+
+using DebugRenderCallback = void (*)(SSD1306Wire &display, void *context);
+using DebugSerialCallback = void (*)(Print &out, void *context);
 
 namespace Logger {
 
@@ -27,6 +31,25 @@ inline void begin(bool enableSerial, OledDisplay *display, const char *deviceId)
   g_serialEnabled = enableSerial;
   g_display = display;
   g_deviceId = deviceId;
+}
+
+// Consolidated initialization function for common logger setup
+// Follows DRY, KISS, SOLID principles by centralizing common initialization logic
+inline void initialize(OledDisplay *display, const char *deviceId) {
+  begin(true, display, deviceId);
+  setLevel(Level::Info);
+  setVerbose(false);
+}
+
+// Safe initialization that prevents double initialization
+// Returns true if initialization was performed, false if already initialized
+inline bool safeInitialize(OledDisplay *display, const char *deviceId) {
+  // Check if already initialized by verifying display is set
+  if (g_display != nullptr) {
+    return false; // Already initialized
+  }
+  initialize(display, deviceId);
+  return true;
 }
 
 inline void setLevel(Level level) { g_level = level; }
@@ -91,6 +114,42 @@ inline void overlay(const char *line1, const char *line2, uint32_t nowMs, uint32
     nowMs,
     durationMs
   );
+}
+
+// Debug routing functionality (consolidated from DebugRouter)
+// Shows temporary debug overlay with optional serial output
+inline void debug(DebugRenderCallback oledCb,
+                  void *oledCtx,
+                  DebugSerialCallback serialCb,
+                  void *serialCtx,
+                  uint32_t nowMs,
+                  uint32_t durationMs) {
+  // Handle OLED display
+  if (g_display != nullptr && oledCb != nullptr) {
+    g_display->showDebug(oledCb, oledCtx, nowMs, durationMs);
+  }
+
+  // Handle serial output
+  if (g_serialEnabled && serialCb != nullptr) {
+    Serial.print(F("[debug] t="));
+    Serial.print(nowMs);
+    if (g_deviceId != nullptr) {
+      Serial.print(F(" id="));
+      Serial.print(g_deviceId);
+    }
+    Serial.print(F(" | "));
+    serialCb(Serial, serialCtx);
+    Serial.println();
+  }
+}
+
+// Convenience method: duration from current millis()
+inline void debugFor(DebugRenderCallback oledCb,
+                     void *oledCtx,
+                     DebugSerialCallback serialCb,
+                     void *serialCtx,
+                     uint32_t durationMs) {
+  debug(oledCb, oledCtx, serialCb, serialCtx, millis(), durationMs);
 }
 
 } // namespace Logger
