@@ -1,21 +1,21 @@
 // Simplified Relay Implementation - Uses Common Application Framework
 // Much cleaner and more maintainable than the original
 
-#include "../lib/device_config.h"
-#include "../lib/config.h"
+#include "lib/device_config.h"
+#include "lib/system_services.h"
+#include "lib/task_manager.h"
+#include "lib/display_provider.h"
+#include "lib/wifi_manager.h"
+#include "lib/logger.h"
+#include "lib/logo.cpp"
+#include "lib/communication_manager.h"
+#include "lib/transport_wifi.h"
+#include "lib/transport_lora.h"
+#include "lib/transport_usb.h"
+#include "lib/transport_screen.h"
+#include "lib/communication_logger.h"
+#include "lib/mqtt_publisher.h"
 #include "config.h"
-#include "../lib/system_services.h"
-#include "../lib/task_manager.h"
-#include "../lib/display_provider.h"
-#include "../lib/wifi_manager.h"
-#include "../lib/logo.cpp"
-#include "../lib/communication_manager.h"
-#include "../lib/communication_logger.h"
-#include "../lib/transport_wifi.h"
-#include "../lib/transport_lora.h"
-#include "../lib/transport_usb.h"
-#include "../lib/transport_screen.h"
-#include "../lib/mqtt_publisher.h"
 #include <memory>
 
 struct HomeCtx { OledDisplay* display; };

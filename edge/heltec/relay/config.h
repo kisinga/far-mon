@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../lib/config.h"
+#include "lib/config.h"
 
 // Per-device configuration for Relay
 static constexpr const char* RELAY_DEVICE_ID = "01";

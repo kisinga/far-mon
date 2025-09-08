@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../lib/config.h"
+#include "lib/config.h"
 
 // Per-device configuration for Remote
 static constexpr const char* REMOTE_DEVICE_ID = "03";
