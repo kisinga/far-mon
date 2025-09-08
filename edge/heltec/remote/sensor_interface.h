@@ -59,15 +59,24 @@ struct SensorConfig {
           enabled(en), priority(pri) {}
 };
 
-// Abstract sensor interface
+// Sensor initialization states
+enum class SensorState {
+    UNINITIALIZED,    // Not yet initialized
+    INITIALIZING,     // Currently initializing
+    READY,           // Successfully initialized and ready
+    FAILED,          // Initialization failed, will retry periodically
+    PERMANENTLY_DISABLED  // Permanently disabled due to critical failure
+};
+
+// Abstract sensor interface with state management
 class Sensor {
 public:
     virtual ~Sensor() = default;
 
-    // Initialize the sensor
+    // Initialize the sensor with retry logic
     virtual bool begin() = 0;
 
-    // Read sensor data
+    // Read sensor data (returns null reading if sensor failed)
     virtual SensorReading read() = 0;
 
     // Get sensor name
@@ -79,15 +88,64 @@ public:
     // Check if sensor is ready/available
     virtual bool isReady() const = 0;
 
+    // Get current sensor state
+    SensorState getState() const { return state; }
+
     // Optional: Get last reading timestamp
     virtual uint32_t getLastReadTime() const { return lastReadTime; }
 
     // Optional: Force a reading
     virtual bool forceRead() { return false; }
 
+    // Optional: Attempt to reinitialize a failed sensor
+    virtual bool retryInit() { return false; }
+
+    // Get initialization failure count
+    uint8_t getFailureCount() const { return failureCount; }
+
+    // Get maximum allowed failures before permanent disable
+    static uint8_t getMaxFailures() { return MAX_FAILURES; }
+
+    // Get time of last initialization attempt
+    uint32_t getLastInitAttempt() const { return lastInitAttempt; }
+
+    // Check if sensor should retry initialization
+    bool shouldRetryInit(uint32_t currentTime, uint32_t retryIntervalMs = 30000) {
+        if (state == SensorState::PERMANENTLY_DISABLED) return false;
+        return (currentTime - lastInitAttempt) >= retryIntervalMs;
+    }
+
 protected:
     uint32_t lastReadTime = 0;
     SensorConfig config;
+    SensorState state = SensorState::UNINITIALIZED;
+    uint8_t failureCount = 0;
+    uint32_t lastInitAttempt = 0;
+    static constexpr uint8_t MAX_FAILURES = 5; // Disable after 5 failures
+
+    // Helper method to update state on initialization
+    void updateInitState(bool success) {
+        lastInitAttempt = millis();
+        if (success) {
+            state = SensorState::READY;
+            failureCount = 0;
+        } else {
+            failureCount++;
+            if (failureCount >= MAX_FAILURES) {
+                state = SensorState::PERMANENTLY_DISABLED;
+            } else {
+                state = SensorState::FAILED;
+            }
+        }
+    }
+
+    // Helper method to create null/invalid reading for failed sensors
+    SensorReading createNullReading() const {
+        SensorReading reading(SensorDataType::CUSTOM, config.name, 0.0f, "");
+        reading.valid = false;
+        reading.timestamp = millis();
+        return reading;
+    }
 };
 
 // Sensor factory functions are declared in sensor_implementations.h

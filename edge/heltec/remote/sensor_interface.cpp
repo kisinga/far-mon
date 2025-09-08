@@ -2,6 +2,7 @@
 // Provides concrete implementations for sensor management
 
 #include "sensor_interface.h"
+#include "../lib/logger.h"
 #include <algorithm>
 
 // SensorManager implementation
@@ -45,25 +46,64 @@ void SensorManager::update(uint32_t currentTime) {
     for (auto& sensor : sensors) {
         if (!sensor->getConfig().enabled) continue;
 
+        // Handle sensor initialization and retry logic
+        SensorState sensorState = sensor->getState();
+
+        // Initialize uninitialized sensors
+        if (sensorState == SensorState::UNINITIALIZED) {
+            LOGI("sensor_mgr", "Initializing sensor: %s", sensor->getName());
+            if (!sensor->begin()) {
+                LOGW("sensor_mgr", "Failed to initialize sensor: %s", sensor->getName());
+            }
+            continue; // Skip reading on first update after init
+        }
+
+        // Retry failed sensors periodically
+        if (sensorState == SensorState::FAILED &&
+            sensor->shouldRetryInit(currentTime)) {
+            LOGI("sensor_mgr", "Retrying sensor: %s (attempt %d/%d)",
+                 sensor->getName(), sensor->getFailureCount(), Sensor::getMaxFailures());
+            if (sensor->retryInit()) {
+                LOGI("sensor_mgr", "Sensor retry successful: %s", sensor->getName());
+            } else {
+                LOGW("sensor_mgr", "Sensor retry failed: %s", sensor->getName());
+            }
+        }
+
+        // Skip disabled sensors
+        if (sensorState == SensorState::PERMANENTLY_DISABLED) {
+            LOGW("sensor_mgr", "Sensor permanently disabled: %s", sensor->getName());
+            continue;
+        }
+
         // Check if it's time to read this sensor
         uint32_t timeSinceLastRead = currentTime - sensor->getLastReadTime();
         if (timeSinceLastRead >= sensor->getConfig().readIntervalMs) {
-            if (sensor->isReady()) {
-                SensorReading reading = sensor->read();
-                if (reading.valid) {
-                    batchReadings.push_back(reading);
-                    hasNewReadings = true;
-                }
+            SensorReading reading = sensor->read();
+
+            // Always add reading to batch (including null readings from failed sensors)
+            // This ensures we transmit null values to indicate sensor failure
+            batchReadings.push_back(reading);
+
+            if (reading.valid) {
+                hasNewReadings = true;
+            } else if (sensorState != SensorState::READY) {
+                // Log when we get null readings from non-ready sensors
+                LOGD("sensor_mgr", "Null reading from sensor: %s (state: %d)",
+                     sensor->getName(), static_cast<int>(sensorState));
             }
         }
     }
 
     // Check if it's time to transmit batch
     uint32_t timeSinceLastBatch = currentTime - lastBatchTime;
-    if (hasNewReadings && timeSinceLastBatch >= batchIntervalMs) {
+    if (!batchReadings.empty() && timeSinceLastBatch >= batchIntervalMs) {
         if (transmitter && transmitter->isReady()) {
             transmitter->transmitBatch(batchReadings);
             lastBatchTime = currentTime;
+            LOGI("sensor_mgr", "Transmitted batch with %d readings", batchReadings.size());
+        } else if (!transmitter) {
+            LOGW("sensor_mgr", "No transmitter configured for sensor batch");
         }
     }
 }

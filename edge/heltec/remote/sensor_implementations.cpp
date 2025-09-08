@@ -14,30 +14,64 @@ UltrasonicSensor::UltrasonicSensor(const SensorConfig& cfg, uint8_t trigPin, uin
 }
 
 bool UltrasonicSensor::begin() {
+    state = SensorState::INITIALIZING;
+
+    // Configure pins
     pinMode(trigPin, OUTPUT);
     pinMode(echoPin, INPUT);
     digitalWrite(trigPin, LOW);
-    return true;
+
+    // Test the sensor by attempting a measurement
+    delay(100); // Allow sensor to stabilize
+    float testDistance = measureDistance();
+
+    // Consider initialization successful if we get a valid reading or reasonable timeout
+    bool initSuccess = (testDistance >= 0 && testDistance <= 4000) || (testDistance == -1);
+    updateInitState(initSuccess);
+
+    return initSuccess;
 }
 
 SensorReading UltrasonicSensor::read() {
+    // Return null reading if sensor failed or disabled
+    if (state == SensorState::FAILED || state == SensorState::PERMANENTLY_DISABLED) {
+        return createNullReading();
+    }
+
     float distance = measureDistance();
     lastReadTime = millis();
 
     SensorReading reading(SensorDataType::DISTANCE, config.name, distance, "mm");
-    reading.valid = (distance > 0 && distance < 4000); // Valid range 0-4000mm
+
+    // Validate distance reading
+    if (distance >= 0 && distance <= 4000) {
+        reading.valid = true;
+    } else {
+        reading.valid = false;
+        reading.value = 0.0f; // Null value for invalid readings
+    }
+
     return reading;
 }
 
 bool UltrasonicSensor::isReady() const {
-    return true; // Always ready once initialized
+    return state == SensorState::READY;
 }
 
 bool UltrasonicSensor::forceRead() {
+    if (state != SensorState::READY) return false;
+
     // Force a reading by triggering measurement
     measureDistance();
     lastReadTime = millis();
     return true;
+}
+
+bool UltrasonicSensor::retryInit() {
+    if (state == SensorState::PERMANENTLY_DISABLED) return false;
+
+    LOGI("ultrasonic", "Retrying initialization for sensor %s", config.name);
+    return begin();
 }
 
 float UltrasonicSensor::measureDistance() {
@@ -50,8 +84,13 @@ float UltrasonicSensor::measureDistance() {
     delayMicroseconds(10);
     digitalWrite(trigPin, LOW);
 
-    // Read the echo pin
+    // Read the echo pin with timeout
     unsigned long duration = pulseIn(echoPin, HIGH, 30000); // 30ms timeout
+
+    // Check for timeout (no echo received)
+    if (duration == 0) {
+        return -1.0f; // Error: no echo received
+    }
 
     // Calculate distance: speed of sound = 343m/s = 0.0343 cm/us
     // Distance = (duration * speed) / 2 (round trip)
@@ -70,13 +109,40 @@ WaterLevelSensor::WaterLevelSensor(const SensorConfig& cfg, uint8_t sensorPin, b
 }
 
 bool WaterLevelSensor::begin() {
+    state = SensorState::INITIALIZING;
+
+    // Configure pin
     pinMode(sensorPin, INPUT_PULLUP);
-    return true;
+
+    // Test the sensor by reading a few times
+    delay(10);
+    int testRead1 = digitalRead(sensorPin);
+    delay(10);
+    int testRead2 = digitalRead(sensorPin);
+
+    // Consider initialization successful if we can read from the pin
+    // (even if the readings are the same, it means the pin is working)
+    bool initSuccess = (testRead1 >= 0 && testRead1 <= 1) && (testRead2 >= 0 && testRead2 <= 1);
+    updateInitState(initSuccess);
+
+    return initSuccess;
 }
 
 SensorReading WaterLevelSensor::read() {
+    // Return null reading if sensor failed or disabled
+    if (state == SensorState::FAILED || state == SensorState::PERMANENTLY_DISABLED) {
+        return createNullReading();
+    }
+
     int rawValue = digitalRead(sensorPin);
     lastReadTime = millis();
+
+    // Check for invalid digital read
+    if (rawValue < 0 || rawValue > 1) {
+        SensorReading reading(SensorDataType::WATER_LEVEL, config.name, 0.0f, "");
+        reading.valid = false;
+        return reading;
+    }
 
     // Convert to boolean: true if water detected
     bool waterDetected = normallyOpen ? (rawValue == LOW) : (rawValue == HIGH);
@@ -88,7 +154,14 @@ SensorReading WaterLevelSensor::read() {
 }
 
 bool WaterLevelSensor::isReady() const {
-    return true;
+    return state == SensorState::READY;
+}
+
+bool WaterLevelSensor::retryInit() {
+    if (state == SensorState::PERMANENTLY_DISABLED) return false;
+
+    LOGI("water_level", "Retrying initialization for sensor %s", config.name);
+    return begin();
 }
 
 // ============================================================================
@@ -100,20 +173,55 @@ WaterFlowSensor::WaterFlowSensor(const SensorConfig& cfg, uint8_t sensorPin)
 }
 
 bool WaterFlowSensor::begin() {
+    state = SensorState::INITIALIZING;
+
+    // Configure pin and interrupt
     pinMode(sensorPin, INPUT_PULLUP);
-    attachInterruptArg(digitalPinToInterrupt(sensorPin), pulseInterrupt, this, FALLING);
-    return true;
+
+    // Test interrupt attachment
+    bool interruptSuccess = (digitalPinToInterrupt(sensorPin) != NOT_AN_INTERRUPT);
+
+    if (interruptSuccess) {
+        attachInterruptArg(digitalPinToInterrupt(sensorPin), pulseInterrupt, this, FALLING);
+    }
+
+    // Test by checking if we can read from the pin
+    delay(10);
+    int testRead = digitalRead(sensorPin);
+    bool pinSuccess = (testRead >= 0 && testRead <= 1);
+
+    bool initSuccess = interruptSuccess && pinSuccess;
+    updateInitState(initSuccess);
+
+    return initSuccess;
 }
 
 SensorReading WaterFlowSensor::read() {
+    // Return null reading if sensor failed or disabled
+    if (state == SensorState::FAILED || state == SensorState::PERMANENTLY_DISABLED) {
+        return createNullReading();
+    }
+
     uint32_t currentTime = millis();
+
+    // Prevent division by zero on first read
+    if (lastReadTime == 0) {
+        lastReadTime = currentTime;
+        SensorReading reading(SensorDataType::FLOW_RATE, config.name, 0.0f, "L/min");
+        reading.valid = true;
+        reading.additionalValues.push_back(totalFlow);
+        reading.additionalNames.push_back("total");
+        return reading;
+    }
+
     uint32_t pulses = pulseCount;
+    uint32_t timeDiff = currentTime - lastReadTime;
 
     // Calculate flow rate (YF-G1: ~4.5 pulses per liter)
-    float flowRate = calculateFlowRate(pulses, currentTime - lastReadTime);
+    float flowRate = calculateFlowRate(pulses, timeDiff);
 
-    // Update total flow
-    totalFlow += flowRate * ((currentTime - lastReadTime) / 1000.0f / 60.0f); // Convert to liters
+    // Update total flow (convert from L/min to liters)
+    totalFlow += flowRate * (timeDiff / 1000.0f / 60.0f);
 
     lastReadTime = currentTime;
     pulseCount = 0; // Reset for next measurement period
@@ -129,7 +237,14 @@ SensorReading WaterFlowSensor::read() {
 }
 
 bool WaterFlowSensor::isReady() const {
-    return true;
+    return state == SensorState::READY;
+}
+
+bool WaterFlowSensor::retryInit() {
+    if (state == SensorState::PERMANENTLY_DISABLED) return false;
+
+    LOGI("flow", "Retrying initialization for sensor %s", config.name);
+    return begin();
 }
 
 float WaterFlowSensor::calculateFlowRate(uint32_t pulses, uint32_t timeMs) {
@@ -159,6 +274,9 @@ RS485Sensor::RS485Sensor(const SensorConfig& cfg, HardwareSerial& serial, uint8_
 }
 
 bool RS485Sensor::begin() {
+    state = SensorState::INITIALIZING;
+
+    // Configure control pins
     pinMode(rePin, OUTPUT);
     pinMode(dePin, OUTPUT);
     setReceiveMode();
@@ -168,11 +286,33 @@ bool RS485Sensor::begin() {
         serial.begin(9600); // Default RS485 baud rate
     }
 
-    return true;
+    // Test serial communication
+    delay(100); // Allow serial to initialize
+    bool serialReady = serial;
+
+    // Test basic communication by checking if we can send/receive
+    if (serialReady) {
+        setTransmitMode();
+        serial.write((uint8_t)0x00); // Test byte
+        serial.flush();
+        setReceiveMode();
+
+        // Check if serial is still available after test
+        serialReady = serial && (serial.availableForWrite() > 0);
+    }
+
+    updateInitState(serialReady);
+    return serialReady;
 }
 
 SensorReading RS485Sensor::read() {
-    // This is a base implementation - specific sensors should override
+    // Return null reading if sensor failed or disabled
+    if (state == SensorState::FAILED || state == SensorState::PERMANENTLY_DISABLED) {
+        return createNullReading();
+    }
+
+    // This is a base implementation - specific RS485 sensors should override
+    // For now, return a basic null reading
     SensorReading reading(SensorDataType::CUSTOM, config.name, 0.0f, "");
     reading.valid = false;
     lastReadTime = millis();
@@ -180,7 +320,14 @@ SensorReading RS485Sensor::read() {
 }
 
 bool RS485Sensor::isReady() const {
-    return serial;
+    return state == SensorState::READY && serial;
+}
+
+bool RS485Sensor::retryInit() {
+    if (state == SensorState::PERMANENTLY_DISABLED) return false;
+
+    LOGI("rs485", "Retrying initialization for sensor %s", config.name);
+    return begin();
 }
 
 bool RS485Sensor::sendCommand(const uint8_t* cmd, size_t cmdLen,
@@ -235,36 +382,67 @@ TemperatureHumiditySensor::TemperatureHumiditySensor(const SensorConfig& cfg, ui
 }
 
 bool TemperatureHumiditySensor::begin() {
-    // Note: This is a simplified implementation
-    // Real implementation would initialize DHT sensor
+    state = SensorState::INITIALIZING;
+
+    // Configure data pin
     pinMode(dataPin, INPUT_PULLUP);
-    return true;
+
+    // Test the sensor by attempting to read
+    delay(100); // Allow sensor to stabilize
+    float testTemp, testHumidity;
+    bool testSuccess = readDHT(testTemp, testHumidity);
+
+    // Consider initialization successful if we get any reading (even if invalid)
+    // This means the pin is working, sensor may just need time to stabilize
+    bool initSuccess = (testTemp >= -50 && testTemp <= 100) && (testHumidity >= 0 && testHumidity <= 100);
+    updateInitState(initSuccess);
+
+    return initSuccess;
 }
 
 SensorReading TemperatureHumiditySensor::read() {
+    // Return null reading if sensor failed or disabled
+    if (state == SensorState::FAILED || state == SensorState::PERMANENTLY_DISABLED) {
+        return createNullReading();
+    }
+
     float temperature, humidity;
 
     if (readDHT(temperature, humidity)) {
         lastReadTime = millis();
 
-        // Return temperature as primary reading
-        SensorReading reading(SensorDataType::TEMPERATURE, config.name, temperature, "C");
-        reading.valid = true;
+        // Validate readings
+        bool tempValid = (temperature >= -50 && temperature <= 100);
+        bool humidityValid = (humidity >= 0 && humidity <= 100);
+
+        SensorReading reading(SensorDataType::TEMPERATURE, config.name,
+                             tempValid ? temperature : 0.0f, "C");
+        reading.valid = tempValid && humidityValid;
 
         // Add humidity as additional value
-        reading.additionalValues.push_back(humidity);
+        reading.additionalValues.push_back(humidityValid ? humidity : 0.0f);
         reading.additionalNames.push_back("humidity");
 
         return reading;
     }
 
+    // Return invalid reading if DHT read failed
     SensorReading reading(SensorDataType::TEMPERATURE, config.name, 0.0f, "C");
     reading.valid = false;
+    reading.additionalValues.push_back(0.0f);
+    reading.additionalNames.push_back("humidity");
     return reading;
 }
 
 bool TemperatureHumiditySensor::isReady() const {
-    return true;
+    return state == SensorState::READY;
+}
+
+bool TemperatureHumiditySensor::retryInit() {
+    if (state == SensorState::PERMANENTLY_DISABLED) return false;
+
+    LOGI("temp_humidity", "Retrying initialization for sensor %s", config.name);
+    return begin();
 }
 
 bool TemperatureHumiditySensor::readDHT(float& temperature, float& humidity) {
@@ -305,30 +483,35 @@ String LoRaBatchTransmitter::formatReadings(const std::vector<SensorReading>& re
     payload += deviceId;
 
     for (const auto& reading : readings) {
-        if (!reading.valid) continue;
-
         payload += ",";
         payload += reading.name;
         payload += "=";
-        payload += String(reading.value, 2);
 
-        // Add unit if present
-        if (reading.unit && strlen(reading.unit) > 0) {
-            payload += reading.unit;
-        }
+        if (reading.valid) {
+            // Valid reading
+            payload += String(reading.value, 2);
 
-        // Add additional values
-        for (size_t i = 0; i < reading.additionalValues.size(); ++i) {
-            payload += ",";
-            if (i < reading.additionalNames.size()) {
-                payload += reading.additionalNames[i];
-            } else {
-                payload += reading.name;
-                payload += "_";
-                payload += String(i);
+            // Add unit if present
+            if (reading.unit && strlen(reading.unit) > 0) {
+                payload += reading.unit;
             }
-            payload += "=";
-            payload += String(reading.additionalValues[i], 2);
+
+            // Add additional values
+            for (size_t i = 0; i < reading.additionalValues.size(); ++i) {
+                payload += ",";
+                if (i < reading.additionalNames.size()) {
+                    payload += reading.additionalNames[i];
+                } else {
+                    payload += reading.name;
+                    payload += "_";
+                    payload += String(i);
+                }
+                payload += "=";
+                payload += String(reading.additionalValues[i], 2);
+            }
+        } else {
+            // Invalid/null reading from failed sensor
+            payload += "null";
         }
     }
 

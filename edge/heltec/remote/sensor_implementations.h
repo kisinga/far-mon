@@ -23,6 +23,9 @@ public:
     // Force a reading (useful for calibration)
     bool forceRead() override;
 
+    // Attempt to reinitialize a failed sensor
+    bool retryInit() override;
+
 private:
     uint8_t trigPin;
     uint8_t echoPin;
@@ -47,6 +50,9 @@ public:
     const SensorConfig& getConfig() const override { return config; }
     bool isReady() const override;
 
+    // Attempt to reinitialize a failed sensor
+    bool retryInit() override;
+
 private:
     uint8_t sensorPin;
     bool normallyOpen;
@@ -67,6 +73,9 @@ public:
     const char* getName() const override { return config.name; }
     const SensorConfig& getConfig() const override { return config; }
     bool isReady() const override;
+
+    // Attempt to reinitialize a failed sensor
+    bool retryInit() override;
 
     // Get total flow since last reset
     float getTotalFlow() const { return totalFlow; }
@@ -103,6 +112,9 @@ public:
     const SensorConfig& getConfig() const override { return config; }
     bool isReady() const override;
 
+    // Attempt to reinitialize a failed sensor
+    bool retryInit() override;
+
     // Send command and wait for response
     bool sendCommand(const uint8_t* cmd, size_t cmdLen, uint8_t* response, size_t& responseLen, uint32_t timeoutMs = 1000);
 
@@ -133,6 +145,9 @@ public:
     const char* getName() const override { return config.name; }
     const SensorConfig& getConfig() const override { return config; }
     bool isReady() const override;
+
+    // Attempt to reinitialize a failed sensor
+    bool retryInit() override;
 
 private:
     uint8_t dataPin;
