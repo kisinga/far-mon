@@ -55,8 +55,8 @@ private:
     OledDisplay oled;
     LoRaComm lora;
     std::unique_ptr<WifiManager> wifiManager;
-    BatteryMonitor::BatteryMonitor batteryMonitor{batteryConfig};
     BatteryMonitor::Config batteryConfig;
+    BatteryMonitor::BatteryMonitor batteryMonitor{batteryConfig};
 
     // Device-specific setup
     void setupDeviceConfig();
@@ -146,14 +146,15 @@ void RemoteApplication::setupServices() {
     lora.safeBegin(LoRaComm::Mode::Slave, 3);
     lora.setVerbose(false);
     lora.setLogLevel((uint8_t)Logger::Level::Info);
-    // Disable auto ping to reduce contention and simplify traffic
-    lora.setAutoPingEnabled(false);
+    // Enable auto ping so relay can track presence reliably after reconnects
+    lora.setAutoPingEnabled(true);
 
-    // Initialize analog pin
-    pinMode(config.analogInputPin, INPUT);
-
-    // Configure ADC attenuation for better voltage range (0-3.3V)
-    analogSetPinAttenuation(config.analogInputPin, ADC_11db);
+    // Initialize analog input only if enabled and pin configured
+    if (config.enableAnalogSensor && config.analogInputPin != 0xFF) {
+        pinMode(config.analogInputPin, INPUT);
+        // Configure ADC attenuation for better voltage range (0-3.3V)
+        analogSetPinAttenuation(config.analogInputPin, ADC_11db);
+    }
 
     // Seed random for jitter
     randomSeed((uint32_t)millis());
@@ -225,6 +226,11 @@ void RemoteApplication::taskLoRaUpdate(CommonAppState& state) {
 void RemoteApplication::taskAnalogRead(CommonAppState& state) {
     // Read analog sensor - cast to access remote-specific fields
     RemoteAppState& remoteState = static_cast<RemoteAppState&>(state);
+
+    // Guard: skip if analog sensor disabled or pin not configured
+    if (!staticConfig || !staticConfig->enableAnalogSensor || staticConfig->analogInputPin == 0xFF) {
+        return;
+    }
 
     // Use configured analog pin from config
     int raw = 0;

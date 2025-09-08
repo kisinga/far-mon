@@ -56,6 +56,13 @@ public:
     bool start(State& state, const char* taskName = "scheduler", uint32_t stackWords = 4096, unsigned int priority = tskIDLE_PRIORITY + 1) {
         if (running) return true;
         statePtr = &state;
+        // Ensure mutex exists (create lazily if constructor-time allocation failed)
+        if (mutex == nullptr) {
+            mutex = xSemaphoreCreateMutex();
+            if (mutex == nullptr) {
+                return false;
+            }
+        }
         running = true;
         BaseType_t ok = xTaskCreate(&RtosTaskScheduler::taskTrampoline, taskName, stackWords, this, priority, &schedulerTask);
         if (ok != pdPASS) {

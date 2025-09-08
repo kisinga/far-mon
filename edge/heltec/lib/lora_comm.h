@@ -96,11 +96,11 @@
 #endif
 
 #ifndef LORA_COMM_TX_GUARD_MS
-#define LORA_COMM_TX_GUARD_MS 15000  // Increased from 8000ms to prevent false stuck detection
+#define LORA_COMM_TX_GUARD_MS 8000  // Faster recovery if TX completion IRQ is missed
 #endif
 
 #ifndef LORA_COMM_TX_STUCK_REINIT_COUNT
-#define LORA_COMM_TX_STUCK_REINIT_COUNT 5  // Increased from 3 to reduce aggressive reinitialization
+#define LORA_COMM_TX_STUCK_REINIT_COUNT 3  // Reinitialize sooner to recover radio
 #endif
 
 class LoRaComm {
@@ -337,7 +337,20 @@ private:
 
   // For slaves: opportunistic ping. Master will track presence via received pings.
   bool sendPing() {
-    if (outboxCount >= LORA_COMM_MAX_OUTBOX) return false;
+    if (outboxCount >= LORA_COMM_MAX_OUTBOX) {
+      // Try to free a slot by dropping a best-effort (non-ACK) message
+      for (size_t i = 0; i < outboxCount; i++) {
+        OutMsg &old = outbox[i];
+        if (old.inUse && !old.requireAck) {
+          old.inUse = false;
+          statsDropped++;
+          Logger::printf(Logger::Level::Warn, "lora", "drop (preempt) msgId=%u for PING", old.msgId);
+          compactOutbox();
+          break;
+        }
+      }
+      if (outboxCount >= LORA_COMM_MAX_OUTBOX) return false;
+    }
     OutMsg &m = outbox[outboxCount++];
     m.inUse = true;
     m.type = FrameType::Ping;

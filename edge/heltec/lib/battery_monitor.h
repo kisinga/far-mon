@@ -29,7 +29,21 @@ struct Config {
 
 class BatteryMonitor {
 public:
-  BatteryMonitor(Config &cfg) : _cfg(cfg) {}
+  BatteryMonitor(Config &cfg) : _cfg(cfg) {
+    _chargeState.pin = -1;
+    _chargeState.activeLow = true;
+    _chargeState.isChargingStable = false;
+    _chargeState.lowStreak = 0;
+    _chargeState.highStreak = 0;
+    _chargeState.lastChangeMs = 0;
+    _chargeGpioSawLow = false;
+    _chargeGpioSawHigh = false;
+    _chargeGpioReliable = false;
+    _lastVBatMv = 0;
+    _lastVBatMs = 0;
+    _fallbackCharging = false;
+    _chargingLatchedUntilMs = 0;
+  }
 
   // Returns true and writes outPercent [0..100] when reading is available.
   // Returns false if adcPin is disabled or any error; caller may render outline-only.

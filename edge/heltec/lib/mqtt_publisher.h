@@ -5,17 +5,8 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
-
-// Enable 256dpi MQTT if available or when ENABLE_ARDUINO_MQTT is defined
-#if defined(ENABLE_ARDUINO_MQTT)
-#define MQTT_USE_256DPI 1
-#endif
-#if !defined(MQTT_USE_256DPI) && defined(__has_include)
-#if __has_include(<MQTT.h>)
+#include <memory>
 #include <MQTT.h>
-#define MQTT_USE_256DPI 1
-#endif
-#endif
 
 struct MqttPublisherConfig {
     bool enableMqtt = false;
@@ -48,13 +39,11 @@ public:
         Serial.print(F(" deviceTopic=")); Serial.print((cfg.deviceTopic && cfg.deviceTopic[0] != '\0') ? cfg.deviceTopic : "(auto)");
         Serial.print(F(" qos=")); Serial.print((unsigned)cfg.qos);
         Serial.print(F(" retain=")); Serial.println(cfg.retain ? F("true") : F("false"));
-#ifdef MQTT_USE_256DPI
         wifiClient = std::make_unique<WiFiClient>();
         client = std::make_unique<MQTTClient>();
         client->begin(cfg.brokerHost, cfg.brokerPort, *wifiClient);
         // Conservative timings: keepAlive 10s, cleanSession, 1000ms command timeout
         client->setOptions(10, true, 1000);
-#endif
         lastConnAttemptMs = 0;
     }
 
@@ -66,7 +55,6 @@ public:
             lastWifiConnected = wifiUp;
         }
         if (!wifiUp) return;
-#ifdef MQTT_USE_256DPI
         if (client) {
             bool mqttUp = client->connected();
             if (mqttUp != lastMqttConnected) {
@@ -85,17 +73,12 @@ public:
             }
             client->loop();
         }
-#endif
     }
 
     bool isReady() const {
         if (!cfg.enableMqtt) return false;
         if (WiFi.status() != WL_CONNECTED) return false;
-#ifdef MQTT_USE_256DPI
         return client && client->connected();
-#else
-        return false;
-#endif
     }
 
     // Publish using baseTopic + "/" + topicSuffix
@@ -111,7 +94,6 @@ public:
             snprintf(topic, sizeof(topic), "%s", cfg.baseTopic ? cfg.baseTopic : "farm/telemetry");
         }
 
-#ifdef MQTT_USE_256DPI
         if (client && client->connected()) {
             bool ok = client->publish(topic, (const char*)payload, (int)length, cfg.retain, (int)cfg.qos);
             if (!ok) {
@@ -121,14 +103,7 @@ public:
             }
             return ok;
         }
-#endif
-        // Fallback: log
-        Serial.print(F("[MQTT] (stub) topic="));
-        Serial.print(topic);
-        Serial.print(F(" payload="));
-        for (uint8_t i = 0; i < length; i++) Serial.write(payload[i]);
-        Serial.println();
-        return true;
+        return false;
     }
 
 private:
@@ -136,7 +111,6 @@ private:
     uint32_t lastConnAttemptMs = 0;
     bool lastWifiConnected = false;
     bool lastMqttConnected = false;
-#ifdef MQTT_USE_256DPI
     std::unique_ptr<WiFiClient> wifiClient;
     std::unique_ptr<MQTTClient> client;
 
@@ -153,9 +127,15 @@ private:
         } else {
             ok = client->connect(cfg.clientId ? cfg.clientId : "device");
         }
-        Serial.println(ok ? F("[MQTT] Connected") : F("[MQTT] Connect failed"));
+        if (ok) {
+            Serial.println(F("[MQTT] Connected"));
+        } else {
+            // Print low-level error information for troubleshooting
+            int err = (int)client->lastError();
+            int rc = (int)client->returnCode();
+            Serial.printf("[MQTT] Connect failed (err=%d rc=%d)\n", err, rc);
+        }
     }
-#endif
 };
 
 
