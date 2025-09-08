@@ -27,6 +27,10 @@ inline OledDisplay *g_display = nullptr;
 inline const char *g_deviceId = nullptr;
 inline OverlayCtx g_overlayCtx; // reused buffer
 
+// Forward declarations to allow usage before definitions
+inline void setLevel(Level level);
+inline void setVerbose(bool verbose);
+
 inline void begin(bool enableSerial, OledDisplay *display, const char *deviceId) {
   g_serialEnabled = enableSerial;
   g_display = display;

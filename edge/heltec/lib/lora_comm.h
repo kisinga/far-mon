@@ -135,6 +135,124 @@ class LoRaComm {
     return true;
   }
 
+  // Backwards-compatible begin wrapper used by transports
+  void begin(Mode m, uint8_t id, bool initBoard = true) {
+    (void)safeBegin(m, id, initBoard);
+  }
+
+  // Expose selected APIs used by services/transports
+  void setOnDataReceived(OnDataReceived cb) { onDataCb = cb; }
+  void setOnAckReceived(OnAckReceived cb) { onAckCb = cb; }
+  void setVerbose(bool verbose) { verboseEnabled = verbose; }
+  void setLogLevel(uint8_t level /*Logger::Level*/) { logLevel = level; }
+  void setAutoPingEnabled(bool enabled) { autoPingEnabled = enabled; }
+  bool sendData(uint8_t destId, const uint8_t *payload, uint8_t length, bool requireAck = true) {
+    if (length > maxAppPayload()) return false;
+    if (outboxCount >= LORA_COMM_MAX_OUTBOX) return false;
+
+    OutMsg &m = outbox[outboxCount++];
+    m.inUse = true;
+    m.type = FrameType::Data;
+    m.destId = destId;
+    m.msgId = allocateMsgId();
+    m.requireAck = requireAck;
+    m.attempts = 0;
+    m.nextAttemptMs = 0;
+    const uint8_t flags = requireAck ? kFlagRequireAck : 0;
+    m.length = buildFrame(m.buf, FrameType::Data, selfId, destId, m.msgId, payload, length, flags);
+    Logger::printf(Logger::Level::Debug, "lora", "ENQ DATA to=%u msgId=%u obx=%u", destId, m.msgId, outboxCount);
+    return true;
+  }
+  void tick(uint32_t nowMs) {
+    lastNowMs = nowMs;
+    Radio.IrqProcess();
+    // Automatic slave ping (jittered and infrequent)
+    if (mode == Mode::Slave && autoPingEnabled) {
+      if ((int32_t)(nowMs - lastPingSentMs) >= 0) {
+        (void)sendPing();
+        const uint32_t window = (uint32_t)random((long)LORA_COMM_SLAVE_PING_MIN_MS, (long)LORA_COMM_SLAVE_PING_MAX_MS + 1);
+        lastPingSentMs = nowMs + window;
+      }
+    } else {
+      // Update master peer TTLs
+      for (size_t i = 0; i < LORA_COMM_MAX_PEERS; i++) {
+        if (peers[i].peerId != 0) {
+          bool alive = ((int32_t)(nowMs - peers[i].lastSeenMs) < (int32_t)LORA_COMM_MASTER_TTL_MS);
+          peers[i].connected = alive;
+        }
+      }
+    }
+    // Priority 1: send pending ACK as soon as radio is idle
+    if (rxPendingAck && radioState != State::Tx) {
+      uint8_t frame[8];
+      uint8_t len = buildFrame(frame, FrameType::Ack, selfId, rxAckTargetId, rxAckMessageId, nullptr, 0, /*flags=*/0);
+      if (Logger::isEnabled(verboseEnabled ? Logger::Level::Verbose : (Logger::Level)logLevel)) {
+        Logger::printf(Logger::Level::Debug, "lora", "TX ACK to=%u msgId=%u", rxAckTargetId, rxAckMessageId);
+      }
+      sendFrame(frame, len);
+      rxPendingAck = false;
+      return; // wait for TX done
+    }
+    // Priority 2: transmit or retry queued messages
+    if (radioState != State::Tx) {
+      int idx = selectNextOutboxIndex(nowMs);
+      if (idx >= 0) {
+        OutMsg &m = outbox[idx];
+        m.attempts++;
+        if (m.requireAck) {
+          m.nextAttemptMs = nowMs + LORA_COMM_ACK_TIMEOUT_MS;
+          awaitingAckMsgId = m.msgId;
+          awaitingAckSrcId = 0; // not used; we match by msgId only
+        }
+        statsTx++;
+        if (outboxCount > statsOutboxMax) statsOutboxMax = outboxCount;
+        Logger::printf(Logger::Level::Debug, "lora", "TX %s to=%u msgId=%u%s",
+                       (m.type == FrameType::Data ? "DATA" : "PING"), m.destId, m.msgId,
+                       (m.requireAck ? " waitAck" : ""));
+        sendFrame(m.buf, m.length);
+        return;
+      }
+      if (outboxCount > 0) {
+        if (!stallActive) {
+          stallActive = true;
+          Logger::printf(Logger::Level::Warn, "lora", "stall rs=%d obx=%u", (int)radioState, outboxCount);
+        }
+      } else if (stallActive) {
+        stallActive = false;
+        Logger::printf(Logger::Level::Info, "lora", "stall cleared");
+      }
+    }
+    // Cleanup: drop expired messages
+    compactOutbox();
+    // Low-noise periodic stats (Verbose): every 5s
+    LOG_EVERY_MS(5000, {
+      Logger::printf(Logger::Level::Verbose, "lora", "stats tx=%u rx_data=%u rx_ack=%u rx_ping=%u drop=%u obx_max=%u", (unsigned)statsTx, (unsigned)statsRxData, (unsigned)statsRxAck, (unsigned)statsRxPing, (unsigned)statsDropped, (unsigned)statsOutboxMax);
+      statsTx = statsRxData = statsRxAck = statsRxPing = statsDropped = 0;
+      statsOutboxMax = outboxCount;
+    });
+  }
+
+  bool isConnected() const {
+    if (mode == Mode::Master) return true;
+    return lastAckOkMs != 0 && ((int32_t)(lastNowMs - lastAckOkMs) < (int32_t)(LORA_COMM_MASTER_TTL_MS));
+  }
+  int16_t getLastRssiDbm() const { return lastRssiDbm; }
+  size_t getPeerCount() const {
+    size_t c = 0;
+    for (size_t i = 0; i < LORA_COMM_MAX_PEERS; i++) if (peers[i].peerId != 0) c++;
+    return c;
+  }
+  bool getPeerByIndex(size_t index, PeerInfo &out) const {
+    size_t seen = 0;
+    for (size_t i = 0; i < LORA_COMM_MAX_PEERS; i++) {
+      if (peers[i].peerId != 0) {
+        if (seen == index) { out = peers[i]; return true; }
+        seen++;
+      }
+    }
+    return false;
+  }
+
 private:
   // Internal unsafe begin - should not be called directly
   void unsafeBegin(Mode m, uint8_t id, bool initBoard = true) {
@@ -167,32 +285,6 @@ private:
     initialized = true;
   }
 
-  void setOnDataReceived(OnDataReceived cb) { onDataCb = cb; }
-  void setOnAckReceived(OnAckReceived cb) { onAckCb = cb; }
-  // Logging control (defaults: disabled)
-  void setVerbose(bool verbose) { verboseEnabled = verbose; }
-  void setLogLevel(uint8_t level /*Logger::Level*/) { logLevel = level; }
-  void setAutoPingEnabled(bool enabled) { autoPingEnabled = enabled; }
-
-  // Enqueue application DATA. Returns false if outbox is full or payload too large.
-  bool sendData(uint8_t destId, const uint8_t *payload, uint8_t length, bool requireAck = true) {
-    if (length > maxAppPayload()) return false;
-    if (outboxCount >= LORA_COMM_MAX_OUTBOX) return false;
-
-    OutMsg &m = outbox[outboxCount++];
-    m.inUse = true;
-    m.type = FrameType::Data;
-    m.destId = destId;
-    m.msgId = allocateMsgId();
-    m.requireAck = requireAck;
-    m.attempts = 0;
-    m.nextAttemptMs = 0;
-    const uint8_t flags = requireAck ? kFlagRequireAck : 0;
-    m.length = buildFrame(m.buf, FrameType::Data, selfId, destId, m.msgId, payload, length, flags);
-    Logger::printf(Logger::Level::Debug, "lora", "ENQ DATA to=%u msgId=%u obx=%u", destId, m.msgId, outboxCount);
-    return true;
-  }
-
   // For slaves: opportunistic ping. Master will track presence via received pings.
   bool sendPing() {
     if (outboxCount >= LORA_COMM_MAX_OUTBOX) return false;
@@ -209,106 +301,7 @@ private:
     return true;
   }
 
-  // Call frequently; processes radio IRQs, sends retries, sends ACKs, updates peer TTLs.
-  void tick(uint32_t nowMs) {
-    lastNowMs = nowMs;
-    Radio.IrqProcess();
 
-    // Automatic slave ping (jittered and infrequent)
-    if (mode == Mode::Slave && autoPingEnabled) {
-      if ((int32_t)(nowMs - lastPingSentMs) >= 0) {
-        (void)sendPing();
-        const uint32_t window = (uint32_t)random((long)LORA_COMM_SLAVE_PING_MIN_MS, (long)LORA_COMM_SLAVE_PING_MAX_MS + 1);
-        lastPingSentMs = nowMs + window;
-      }
-    } else {
-      // Update master peer TTLs
-      for (size_t i = 0; i < LORA_COMM_MAX_PEERS; i++) {
-        if (peers[i].peerId != 0) {
-          bool alive = ((int32_t)(nowMs - peers[i].lastSeenMs) < (int32_t)LORA_COMM_MASTER_TTL_MS);
-          peers[i].connected = alive;
-        }
-      }
-    }
-
-    // Priority 1: send pending ACK as soon as radio is idle
-    if (rxPendingAck && radioState != State::Tx) {
-      uint8_t frame[8];
-      uint8_t len = buildFrame(frame, FrameType::Ack, selfId, rxAckTargetId, rxAckMessageId, nullptr, 0, /*flags=*/0);
-      if (Logger::isEnabled(verboseEnabled ? Logger::Level::Verbose : (Logger::Level)logLevel)) {
-        Logger::printf(Logger::Level::Debug, "lora", "TX ACK to=%u msgId=%u", rxAckTargetId, rxAckMessageId);
-      }
-      sendFrame(frame, len);
-      rxPendingAck = false;
-      return; // wait for TX done
-    }
-
-    // Priority 2: transmit or retry queued messages
-    if (radioState != State::Tx) {
-      int idx = selectNextOutboxIndex(nowMs);
-      if (idx >= 0) {
-        OutMsg &m = outbox[idx];
-        m.attempts++;
-        if (m.requireAck) {
-          m.nextAttemptMs = nowMs + LORA_COMM_ACK_TIMEOUT_MS;
-          awaitingAckMsgId = m.msgId;
-          awaitingAckSrcId = 0; // not used; we match by msgId only
-        }
-        statsTx++;
-        if (outboxCount > statsOutboxMax) statsOutboxMax = outboxCount;
-        Logger::printf(Logger::Level::Debug, "lora", "TX %s to=%u msgId=%u%s",
-                       (m.type == FrameType::Data ? "DATA" : "PING"), m.destId, m.msgId,
-                       (m.requireAck ? " waitAck" : ""));
-        sendFrame(m.buf, m.length);
-        return;
-      }
-      if (outboxCount > 0) {
-        if (!stallActive) {
-          stallActive = true;
-          Logger::printf(Logger::Level::Warn, "lora", "stall rs=%d obx=%u", (int)radioState, outboxCount);
-        }
-      } else if (stallActive) {
-        stallActive = false;
-        Logger::printf(Logger::Level::Info, "lora", "stall cleared");
-      }
-    }
-
-    // Cleanup: drop expired messages
-    compactOutbox();
-
-    // Low-noise periodic stats (Verbose): every 5s
-    LOG_EVERY_MS(5000, {
-      Logger::printf(Logger::Level::Verbose, "lora", "stats tx=%u rx_data=%u rx_ack=%u rx_ping=%u drop=%u obx_max=%u", (unsigned)statsTx, (unsigned)statsRxData, (unsigned)statsRxAck, (unsigned)statsRxPing, (unsigned)statsDropped, (unsigned)statsOutboxMax);
-      statsTx = statsRxData = statsRxAck = statsRxPing = statsDropped = 0;
-      statsOutboxMax = outboxCount;
-    });
-  }
-
-  // Slave connectivity view
-  bool isConnected() const {
-    if (mode == Mode::Master) return true;
-    return lastAckOkMs != 0 && ((int32_t)(lastNowMs - lastAckOkMs) < (int32_t)(LORA_COMM_MASTER_TTL_MS));
-  }
-
-  int16_t getLastRssiDbm() const { return lastRssiDbm; }
-
-  // Master APIs
-  size_t getPeerCount() const {
-    size_t c = 0;
-    for (size_t i = 0; i < LORA_COMM_MAX_PEERS; i++) if (peers[i].peerId != 0) c++;
-    return c;
-  }
-
-  bool getPeerByIndex(size_t index, PeerInfo &out) const {
-    size_t seen = 0;
-    for (size_t i = 0; i < LORA_COMM_MAX_PEERS; i++) {
-      if (peers[i].peerId != 0) {
-        if (seen == index) { out = peers[i]; return true; }
-        seen++;
-      }
-    }
-    return false;
-  }
 
  private:
   // Internal state

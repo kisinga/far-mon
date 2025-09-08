@@ -230,8 +230,8 @@ void RelayApplication::setupTasks() {
     if (config.communication.wifi.enableWifi) {
         taskManager.registerTask("wifi", taskWifiMonitor, config.communication.wifi.statusCheckIntervalMs);
     }
-    // TODO: Re-enable router task when routing functionality is implemented
-    // taskManager.registerTask("router", taskRouter, 100);
+    // Enable router task for LoRa->WiFi message forwarding
+    taskManager.registerTask("router", taskRouter, 100);
     if (config.communication.enableCommunicationManager) {
         taskManager.registerTask("comm_mgr", taskCommunicationManager, config.communication.updateIntervalMs);
     }

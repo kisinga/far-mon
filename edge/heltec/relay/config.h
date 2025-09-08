@@ -18,6 +18,10 @@ inline RelayConfig buildRelayConfig() {
     cfg.communication.mqtt.baseTopic = "farm/telemetry";
     cfg.communication.mqtt.clientId = RELAY_DEVICE_ID;
     cfg.communication.mqtt.deviceTopic = RELAY_DEVICE_ID;
+
+    // Enable communication manager for routing functionality
+    cfg.communication.enableCommunicationManager = true;
+
     return cfg;
 }
 

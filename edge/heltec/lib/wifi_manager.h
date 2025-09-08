@@ -25,22 +25,8 @@ public:
         unsafeBegin();
         return true;
     }
-
-private:
-    // Internal unsafe begin - should not be called directly
-    void unsafeBegin() {
-        if (!cfg.ssid || !cfg.password) {
-            Serial.println(F("[WiFi] No SSID/password configured"));
-            return;
-        }
-
-        Serial.printf("[WiFi] Connecting to %s...\n", cfg.ssid);
-        WiFi.begin(cfg.ssid, cfg.password);
-        lastReconnectAttempt = millis();
-
-        initialized = true;
-    }
-
+    
+    // Public update API used by services/transports
     void update(uint32_t nowMs) {
         // Periodic reconnection attempts if disconnected
         if (!isConnected() && (nowMs - lastReconnectAttempt >= cfg.reconnectIntervalMs)) {
@@ -94,6 +80,21 @@ private:
         for (uint8_t i = 0; i < length; i++) Serial.write(payload[i]);
         Serial.println();
         return true;
+    }
+
+private:
+    // Internal unsafe begin - should not be called directly
+    void unsafeBegin() {
+        if (!cfg.ssid || !cfg.password) {
+            Serial.println(F("[WiFi] No SSID/password configured"));
+            return;
+        }
+
+        Serial.printf("[WiFi] Connecting to %s...\n", cfg.ssid);
+        WiFi.begin(cfg.ssid, cfg.password);
+        lastReconnectAttempt = millis();
+
+        initialized = true;
     }
 
 private:

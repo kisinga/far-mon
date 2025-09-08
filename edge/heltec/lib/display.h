@@ -55,7 +55,10 @@ class OledDisplay {
     return true;
   }
 
-private:
+  // Public APIs used by services and application
+  
+
+ private:
   // Internal unsafe begin - should not be called directly
   void unsafeBegin(bool enable) {
     enabled = enable;
@@ -91,6 +94,8 @@ private:
 
     initialized = true;
   }
+
+  public:
 
   void setI2cClock(uint32_t hz) {
     Wire.setClock(hz);
