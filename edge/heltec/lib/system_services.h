@@ -6,7 +6,6 @@
 #include <memory>
 #include <functional>
 #include "config.h"
-#include "display_provider.h"
 #include "wifi_manager.h"
 #include "battery_monitor.h"
 #include "lora_comm.h"
@@ -22,17 +21,6 @@ public:
     virtual void update(uint32_t nowMs) = 0;
     virtual uint8_t getBatteryPercent() const = 0;
     virtual bool isCharging() const = 0;
-};
-
-class IDisplayService {
-public:
-    virtual ~IDisplayService() = default;
-    virtual void update(uint32_t nowMs) = 0;
-    virtual void setHeaderProvider(std::unique_ptr<HeaderRightProvider> provider) = 0;
-    virtual void getContentArea(int16_t& x, int16_t& y, int16_t& w, int16_t& h) const = 0;
-    virtual void setBatteryStatus(bool valid, uint8_t percent) = 0;
-    virtual void setBatteryCharging(bool charging) = 0;
-    virtual void tick(uint32_t nowMs) = 0;
 };
 
 class IWifiService {
@@ -74,39 +62,6 @@ public:
 
 private:
     BatteryMonitor::BatteryMonitor& batteryMonitor;
-};
-
-class DisplayService : public IDisplayService {
-public:
-    explicit DisplayService(OledDisplay& display) : oledDisplay(display) {}
-
-    void update(uint32_t nowMs) override {
-        // Display update is handled by tick() method
-    }
-
-    void setHeaderProvider(std::unique_ptr<HeaderRightProvider> provider) override {
-        headerProvider = std::move(provider);
-    }
-
-    void getContentArea(int16_t& x, int16_t& y, int16_t& w, int16_t& h) const override {
-        oledDisplay.getContentArea(x, y, w, h);
-    }
-
-    void setBatteryStatus(bool valid, uint8_t percent) override {
-        oledDisplay.setBatteryStatus(valid, percent);
-    }
-
-    void setBatteryCharging(bool charging) override {
-        oledDisplay.setBatteryCharging(charging);
-    }
-
-    void tick(uint32_t nowMs) override {
-        oledDisplay.tick(nowMs);
-    }
-
-private:
-    OledDisplay& oledDisplay;
-    std::unique_ptr<HeaderRightProvider> headerProvider;
 };
 
 class WifiService : public IWifiService {
@@ -167,27 +122,29 @@ private:
 // Service container with dependency injection
 struct SystemServices {
     std::unique_ptr<IBatteryService> battery;
-    std::unique_ptr<IDisplayService> display;
     std::unique_ptr<IWifiService> wifi;
     std::unique_ptr<ILoRaService> lora;
 
     // References to concrete objects for tasks that need them
     OledDisplay* oledDisplay = nullptr;
+    LoRaComm* loraComm = nullptr;
+
 
     // Factory method for creating services
-    static SystemServices create(OledDisplay& oledDisplay,
+    static SystemServices create(OledDisplay& oled,
                                 WifiManager& wifiManager,
                                 BatteryMonitor::BatteryMonitor& batteryMonitor,
-                                LoRaComm& loraComm) {
+                                LoRaComm& lora) {
         SystemServices services;
 
         services.battery = std::make_unique<BatteryService>(batteryMonitor);
-        services.display = std::make_unique<DisplayService>(oledDisplay);
         services.wifi = std::make_unique<WifiService>(wifiManager);
-        services.lora = std::make_unique<LoRaService>(loraComm);
+        services.lora = std::make_unique<LoRaService>(lora);
 
         // Store references for tasks that need direct access
-        services.oledDisplay = &oledDisplay;
+        services.oledDisplay = &oled;
+        services.loraComm = &lora;
+
 
         return services;
     }

@@ -4,33 +4,46 @@
 #include "lib/device_config.h"
 #include "lib/system_services.h"
 #include "lib/task_manager.h"
-#include "lib/display_provider.h"
 #include "lib/logger.h"
 #include "lib/lora_comm.h"
 #include "lib/battery_monitor.h"
+#include "lib/ui_manager.h"
+#include "lib/TextElement.h"
+#include "lib/IconElement.h"
+#include "lib/BatteryIconElement.h"
+#include "lib/HeaderStatusElement.h"
+#include "lib/logo.h"
 #include "sensor_interface.h"
 #include "sensor_implementations.h"
 #include "remote_sensor_config.h"
 #include "config.h"
 #include <memory>
 
-struct HomeCtx { OledDisplay* display; };
-static HomeCtx remoteHomeCtx{};
+// Source file includes for Arduino build system
+#include "lib/ui_manager.cpp"
+#include "lib/ScreenLayout.cpp"
+#include "lib/TopBarLayout.cpp"
+#include "lib/MainContentLayout.cpp"
+#include "lib/BatteryIconElement.cpp"
+#include "lib/HeaderStatusElement.cpp"
+
+// struct HomeCtx { OledDisplay* display; };
+// static HomeCtx remoteHomeCtx{};
 static volatile bool gRemoteReady = false;
 
 // Simple homescreen renderer for quick visual confirmation
-static void renderRemoteHome(SSD1306Wire &d, void *ctx) {
-    int16_t cx = 52, cy = 14, cw = 76, ch = 50; // fallback offsets: logo 48px + 4px margin
-    HomeCtx* c = static_cast<HomeCtx*>(ctx);
-    if (c && c->display) {
-        c->display->getContentArea(cx, cy, cw, ch);
-    }
-    d.setTextAlignment(TEXT_ALIGN_LEFT);
-    char header[16];
-    snprintf(header, sizeof(header), "Remote %s", REMOTE_DEVICE_ID);
-    d.drawString(cx, cy, header);
-    d.drawString(cx, cy + 14, gRemoteReady ? F("Ready") : F("Starting..."));
-}
+// static void renderRemoteHome(SSD1306Wire &d, void *ctx) {
+//     int16_t cx = 52, cy = 14, cw = 76, ch = 50; // fallback offsets: logo 48px + 4px margin
+//     HomeCtx* c = static_cast<HomeCtx*>(ctx);
+//     if (c && c->display) {
+//         c->display->getContentArea(cx, cy, cw, ch);
+//     }
+//     d.setTextAlignment(TEXT_ALIGN_LEFT);
+//     char header[16];
+//     snprintf(header, sizeof(header), "Remote %s", REMOTE_DEVICE_ID);
+//     d.drawString(cx, cy, header);
+//     d.drawString(cx, cy + 14, gRemoteReady ? F("Ready") : F("Starting..."));
+// }
 
 // Remote-specific state
 struct RemoteAppState : CommonAppState {
@@ -57,6 +70,7 @@ private:
 
     // Hardware components
     OledDisplay oled;
+    UIManager uiManager{oled};
     LoRaComm lora;
     std::unique_ptr<WifiManager> wifiManager;
     BatteryMonitor::Config batteryConfig;
@@ -65,6 +79,11 @@ private:
     // Sensor system components
     SensorManager sensorManager;
     std::unique_ptr<LoRaBatchTransmitter> sensorTransmitter;
+
+    // UI Components
+    TextElement* statusText = nullptr;
+    BatteryIconElement* batteryIcon = nullptr;
+    HeaderStatusElement* headerStatus = nullptr;
 
     // Device-specific setup
     void setupDeviceConfig();
@@ -127,16 +146,36 @@ void RemoteApplication::setupServices() {
 
     // Initialize OLED display
     oled.safeBegin(true);
-    oled.setDeviceId(REMOTE_DEVICE_ID);
-    oled.setHeaderRightMode(HeaderRightMode::SignalBars);
-    remoteHomeCtx.display = &oled;
-    oled.setHomescreenRenderer(renderRemoteHome, &remoteHomeCtx);
     oled.setI2cClock(400000);
     bool found = oled.probeI2C(OLED_I2C_ADDR);
     Serial.printf("[i2c] OLED 0x%02X found=%s\n", OLED_I2C_ADDR, found ? "yes" : "no");
     if (!found) {
         oled.i2cScan(Serial);
     }
+
+    // Setup UI
+    uiManager.init();
+    auto& layout = uiManager.getLayout();
+
+    // Top bar
+    layout.getTopBar().setColumn(0, std::make_unique<TextElement>(String("ID:") + REMOTE_DEVICE_ID));
+    
+    auto batteryElement = std::make_unique<BatteryIconElement>();
+    batteryIcon = batteryElement.get();
+    layout.getTopBar().setColumn(1, std::move(batteryElement));
+
+    auto headerStatusElement = std::make_unique<HeaderStatusElement>();
+    headerStatus = headerStatusElement.get();
+    layout.getTopBar().setColumn(3, std::move(headerStatusElement));
+
+
+    // Main content
+    layout.getMainContent().setLeftColumnWidth(logo_small_width + 4); // logo width + margin
+    layout.getMainContent().setLeft(std::make_unique<IconElement>(logo_small_width, logo_small_height, logo_small_bits));
+    auto statusTextElement = std::make_unique<TextElement>("Starting...");
+    statusText = statusTextElement.get();
+    layout.getMainContent().setRight(std::move(statusTextElement));
+
 
     // Initialize Logger (with display support for debug overlays)
     Logger::safeInitialize(&oled, REMOTE_DEVICE_ID);
@@ -274,6 +313,9 @@ void RemoteApplication::setupTasks() {
     taskManager.start(appState);
 
     gRemoteReady = true;
+    if (statusText) {
+        statusText->setText("Ready");
+    }
     LOGI("remote", "Tasks registered");
 }
 
@@ -291,9 +333,8 @@ void RemoteApplication::taskBatteryMonitor(CommonAppState& state) {
         bool charging = staticServices->battery->isCharging();
 
         // Push to display so header battery icon reflects current state
-        if (staticServices->display) {
-            staticServices->display->setBatteryStatus(percent <= 100, percent);
-            staticServices->display->setBatteryCharging(charging);
+        if (staticApplication && staticApplication->batteryIcon) {
+            staticApplication->batteryIcon->setStatus(percent, charging);
         }
 
         LOGI("remote", "Battery: %d%%, Charging: %s", percent, charging ? "YES" : "NO");
@@ -301,17 +342,18 @@ void RemoteApplication::taskBatteryMonitor(CommonAppState& state) {
 }
 
 void RemoteApplication::taskDisplayUpdate(CommonAppState& state) {
-    if (staticServices && staticServices->display) {
-        staticServices->display->tick(state.nowMs);
+    if (staticApplication) {
+        staticApplication->uiManager.tick();
     }
 }
 
 void RemoteApplication::taskLoRaUpdate(CommonAppState& state) {
-    if (staticServices && staticServices->lora) {
-        staticServices->lora->update(state.nowMs);
-        if (staticServices->oledDisplay) {
-            staticServices->oledDisplay->setLoraStatus(staticServices->lora->isConnected(),
-                                                       staticServices->lora->getLastRssiDbm());
+    if (staticServices && staticServices->loraComm) {
+        staticServices->loraComm->tick(state.nowMs);
+        Radio.IrqProcess();
+        if (staticApplication && staticApplication->headerStatus) {
+            staticApplication->headerStatus->setLoraStatus(staticServices->loraComm->isConnected(),
+                                                          staticServices->loraComm->getLastRssiDbm());
         }
     }
 }
@@ -351,13 +393,13 @@ void RemoteApplication::taskTelemetryReport(CommonAppState& state) {
     }
 
     // Send telemetry as compact JSON for MQTT-friendly consumption (no ACK to simplify)
-    if (staticServices && staticServices->lora) {
+    if (staticServices && staticServices->loraComm) {
         char buf[64];
         int n = snprintf(buf, sizeof(buf), "{\"id\":\"%s\",\"raw\":%d,\"voltage\":%.3f}",
                         REMOTE_DEVICE_ID, remoteState.analogRaw, remoteState.analogVoltage);
 
         if (n > 0) {
-            staticServices->lora->sendData(1, (const uint8_t*)buf,
+            staticServices->loraComm->sendData(1, (const uint8_t*)buf,
                                           (uint8_t)min(n, (int)sizeof(buf) - 1), false);
             LOGI("remote", "Telemetry sent: %s", buf);
         }

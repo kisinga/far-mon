@@ -4,7 +4,6 @@
 #pragma once
 
 #include "transport_interface.h"
-#include "display_provider.h"
 #include "config.h"
 
 class TransportScreen : public TransportInterface {

@@ -4,7 +4,6 @@
 #include "lib/device_config.h"
 #include "lib/system_services.h"
 #include "lib/task_manager.h"
-#include "lib/display_provider.h"
 #include "lib/wifi_manager.h"
 #include "lib/logger.h"
 #include "lib/logo.cpp"
@@ -18,23 +17,22 @@
 #include "config.h"
 #include <memory>
 
-struct HomeCtx { OledDisplay* display; };
-static HomeCtx relayHomeCtx{};
-static volatile bool gRelayReady = false;
+// UI Framework
+#include "lib/ui_manager.h"
+#include "lib/TextElement.h"
+#include "lib/IconElement.h"
+#include "lib/BatteryIconElement.h"
+#include "lib/HeaderStatusElement.h"
 
-// Simple homescreen renderer for quick visual confirmation
-static void renderRelayHome(SSD1306Wire &d, void *ctx) {
-    int16_t cx = 52, cy = 14, cw = 76, ch = 50; // fallback offsets: logo 48px + 4px margin
-    HomeCtx* c = static_cast<HomeCtx*>(ctx);
-    if (c && c->display) {
-        c->display->getContentArea(cx, cy, cw, ch);
-    }
-    d.setTextAlignment(TEXT_ALIGN_LEFT);
-    char header[16];
-    snprintf(header, sizeof(header), "Relay %s", RELAY_DEVICE_ID);
-    d.drawString(cx, cy, header);
-    d.drawString(cx, cy + 14, gRelayReady ? F("Ready") : F("Starting..."));
-}
+// Source file includes for Arduino build system
+#include "lib/ui_manager.cpp"
+#include "lib/ScreenLayout.cpp"
+#include "lib/TopBarLayout.cpp"
+#include "lib/MainContentLayout.cpp"
+#include "lib/BatteryIconElement.cpp"
+#include "lib/HeaderStatusElement.cpp"
+
+static volatile bool gRelayReady = false;
 
 // Relay-specific state
 struct RelayAppState : CommonAppState {
@@ -58,6 +56,7 @@ private:
 
     // Hardware components
     OledDisplay oled;
+    UIManager uiManager{oled};
     LoRaComm lora;
     std::unique_ptr<WifiManager> wifiManager;
     BatteryMonitor::BatteryMonitor batteryMonitor{batteryConfig};
@@ -70,6 +69,11 @@ private:
     std::unique_ptr<TransportUSB> transportUsb;
     std::unique_ptr<TransportScreen> transportScreen;
     std::unique_ptr<MqttPublisher> mqtt;
+
+    // UI Components
+    TextElement* statusText = nullptr;
+    BatteryIconElement* batteryIcon = nullptr;
+    HeaderStatusElement* headerStatus = nullptr;
 
     // Device-specific setup
     void setupDeviceConfig();
@@ -95,6 +99,7 @@ private:
     static WifiManager* staticWifi;
     static CommunicationManager* staticCommManager;
     static MqttPublisher* staticMqtt;
+    static RelayApplication* staticApplication;
     // Simple routing ring buffer for LoRa->WiFi
     struct RouteMsg { uint8_t srcId; uint8_t len; uint8_t bytes[64]; };
     static constexpr size_t kRouteQueueSize = 8;
@@ -111,6 +116,7 @@ LoRaComm* RelayApplication::staticLora = nullptr;
 WifiManager* RelayApplication::staticWifi = nullptr;
 CommunicationManager* RelayApplication::staticCommManager = nullptr;
 MqttPublisher* RelayApplication::staticMqtt = nullptr;
+RelayApplication* RelayApplication::staticApplication = nullptr;
 RelayApplication::RouteMsg RelayApplication::routeQueue[RelayApplication::kRouteQueueSize] = {};
 volatile uint8_t RelayApplication::routeHead = 0;
 volatile uint8_t RelayApplication::routeTail = 0;
@@ -120,6 +126,8 @@ void RelayApplication::initialize() {
     setupDeviceConfig();
     setupServices();
     setupTasks();
+
+    staticApplication = this;
 
     CommunicationLogger::info("relay", "Relay application initialized");
 }
@@ -142,19 +150,35 @@ void RelayApplication::setupServices() {
 
     // Initialize OLED display
     oled.safeBegin(true);
-    oled.setDeviceId(RELAY_DEVICE_ID);
-    // Keep peer count on relay header (right side)
-    oled.setHeaderRightMode(HeaderRightMode::PeerCount);
-    // Also show a small WiFi icon in the header-left near battery
-    oled.setShowWifiMiniIconInHeaderLeft(true);
-    relayHomeCtx.display = &oled;
-    oled.setHomescreenRenderer(renderRelayHome, &relayHomeCtx);
     oled.setI2cClock(400000);
     bool found = oled.probeI2C(OLED_I2C_ADDR);
     Serial.printf("[i2c] OLED 0x%02X found=%s\n", OLED_I2C_ADDR, found ? "yes" : "no");
     if (!found) {
         oled.i2cScan(Serial);
     }
+
+    // Setup UI
+    uiManager.init();
+    auto& layout = uiManager.getLayout();
+
+    // Top bar
+    layout.getTopBar().setColumn(0, std::make_unique<TextElement>(String("Relay ") + RELAY_DEVICE_ID));
+    
+    auto batteryElement = std::make_unique<BatteryIconElement>();
+    batteryIcon = batteryElement.get();
+    layout.getTopBar().setColumn(1, std::move(batteryElement));
+
+    auto headerStatusElement = std::make_unique<HeaderStatusElement>();
+    headerStatus = headerStatusElement.get();
+    headerStatus->setMode(HeaderStatusElement::Mode::PeerCount);
+    layout.getTopBar().setColumn(3, std::move(headerStatusElement));
+
+    // Main content
+    layout.getMainContent().setLeftColumnWidth(logo_small_width + 4);
+    layout.getMainContent().setLeft(std::make_unique<IconElement>(logo_small_width, logo_small_height, logo_small_bits));
+    auto statusTextElement = std::make_unique<TextElement>("Starting...");
+    statusText = statusTextElement.get();
+    layout.getMainContent().setRight(std::move(statusTextElement));
 
     // Initialize Logger (with display support for debug overlays)
     Logger::safeInitialize(&oled, RELAY_DEVICE_ID);
@@ -243,6 +267,9 @@ void RelayApplication::setupTasks() {
     taskManager.start(appState);
 
     gRelayReady = true;
+    if (statusText) {
+        statusText->setText("Ready");
+    }
     LOGI("relay", "Tasks registered");
 }
 
@@ -309,9 +336,11 @@ void RelayApplication::taskBatteryMonitor(CommonAppState& state) {
         bool charging = staticServices->battery->isCharging();
 
         // Push to display so header battery icon reflects current state
-        if (staticServices->display) {
-            staticServices->display->setBatteryStatus(percent <= 100, percent);
-            staticServices->display->setBatteryCharging(charging);
+        if (staticServices->oledDisplay) { // Keep this for now for backward compat with logger
+            // The new component will handle the drawing
+        }
+        if (staticApplication && staticApplication->batteryIcon) {
+            staticApplication->batteryIcon->setStatus(percent, charging);
         }
 
         LOGI("relay", "Battery: %d%%, Charging: %s", percent, charging ? "YES" : "NO");
@@ -319,8 +348,8 @@ void RelayApplication::taskBatteryMonitor(CommonAppState& state) {
 }
 
 void RelayApplication::taskDisplayUpdate(CommonAppState& state) {
-    if (staticServices && staticServices->display) {
-        staticServices->display->tick(state.nowMs);
+    if (staticApplication) {
+        staticApplication->uiManager.tick();
     }
 }
 
@@ -328,34 +357,46 @@ void RelayApplication::taskWifiMonitor(CommonAppState& state) {
     if (staticServices && staticServices->wifi) {
         staticServices->wifi->update(state.nowMs);
         bool connected = staticServices->wifi->isConnected();
-        if (staticServices->oledDisplay) {
-            // Map RSSI percent via WifiManager helper and push to header
+        if (staticApplication && staticApplication->headerStatus) {
+            // NOTE: The relay uses PeerCount mode, so this won't be visible unless mode is changed.
             int8_t percent = staticServices->wifi->getSignalStrengthPercent();
-            staticServices->oledDisplay->setWifiStatus(connected, percent);
+            staticApplication->headerStatus->setWifiStatus(connected, percent);
         }
         CommunicationLogger::info("relay", "WiFi: %s", connected ? "CONNECTED" : "DISCONNECTED");
     }
 }
 
 void RelayApplication::taskLoRaUpdate(CommonAppState& state) {
-    if (staticServices && staticServices->lora) {
-        staticServices->lora->update(state.nowMs);
+    if (staticServices && staticServices->loraComm) {
+        staticServices->loraComm->tick(state.nowMs);
+        Radio.IrqProcess();
         // Push LoRa status into header UI
-        if (staticServices->oledDisplay) {
-            // Even though relay shows peer count, set LoRa status too (no harm)
-            staticServices->oledDisplay->setLoraStatus(staticServices->lora->isConnected(),
-                                                       staticServices->lora->getLastRssiDbm());
-            staticServices->oledDisplay->setPeerCount((uint16_t)staticServices->lora->getPeerCount());
+        if (staticApplication && staticApplication->headerStatus) {
+            staticApplication->headerStatus->setLoraStatus(staticServices->loraComm->isConnected(),
+                                                      staticServices->loraComm->getLastRssiDbm());
+            // Also update peer count since that's the visible mode
+            size_t peerCount = 0;
+            for (size_t i = 0; ; i++) {
+                LoRaComm::PeerInfo p{};
+                if (!staticServices->loraComm->getPeerByIndex(i, p)) break;
+                if (p.connected) peerCount++;
+            }
+            staticApplication->headerStatus->setPeerCount((uint16_t)peerCount);
         }
     }
 }
 
 void RelayApplication::taskPeerMonitor(CommonAppState& state) {
-    if (staticServices && staticServices->lora) {
-        size_t peerCount = staticServices->lora->getPeerCount();
+    if (staticServices && staticServices->loraComm) {
+        size_t peerCount = 0;
+        for (size_t i = 0; ; i++) {
+            LoRaComm::PeerInfo p{};
+            if (!staticServices->loraComm->getPeerByIndex(i, p)) break;
+            if (p.connected) peerCount++;
+        }
         LOGI("relay", "Connected peers: %u", (unsigned)peerCount);
-        if (staticServices->oledDisplay) {
-            staticServices->oledDisplay->setPeerCount((uint16_t)peerCount);
+        if (staticApplication && staticApplication->headerStatus) {
+            staticApplication->headerStatus->setPeerCount((uint16_t)peerCount);
         }
     }
 }
