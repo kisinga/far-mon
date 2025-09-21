@@ -5,9 +5,14 @@
 #include "display.h"
 #include "HT_SSD1306Wire.h" // Include for TEXT_ALIGNMENT enum
 
+// Forward declaration of the display class
+class SSD1306Wire;
+
 class IDisplayHal {
 public:
     virtual ~IDisplayHal() = default;
+
+    virtual SSD1306Wire& getDisplay() = 0;
 
     virtual bool begin() = 0;
     virtual void clear() = 0;
@@ -27,6 +32,7 @@ public:
 class OledDisplayHal : public IDisplayHal {
 public:
     OledDisplayHal();
+    SSD1306Wire& getDisplay() override;
     bool begin() override;
     void clear() override;
     void display() override;
@@ -45,6 +51,10 @@ private:
 };
 
 OledDisplayHal::OledDisplayHal() : _oled() {}
+
+SSD1306Wire& OledDisplayHal::getDisplay() {
+    return _oled.getDisplay();
+}
 
 bool OledDisplayHal::begin() {
     return _oled.safeBegin(true);

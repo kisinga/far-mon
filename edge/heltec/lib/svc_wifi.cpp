@@ -13,3 +13,7 @@ bool WifiService::isConnected() const {
 int8_t WifiService::getSignalStrengthPercent() const {
     return wifiHal.getSignalStrengthPercent();
 }
+
+bool WifiService::isMqttConnected() const {
+    return wifiHal.isMqttConnected();
+}

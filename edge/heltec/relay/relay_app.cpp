@@ -52,7 +52,7 @@ private:
 
     // UI Elements
     std::vector<std::shared_ptr<UIElement>> uiElements;
-    std::shared_ptr<TextElement> statusTextElement;
+    std::shared_ptr<TextElement> mqttStatusText;
     std::shared_ptr<BatteryIconElement> batteryElement;
     std::shared_ptr<HeaderStatusElement> peerStatusElement;
     std::shared_ptr<HeaderStatusElement> wifiStatusElement;
@@ -170,6 +170,16 @@ void RelayApplicationImpl::initialize() {
             if (wifiStatusElement) {
                 wifiStatusElement->setWifiStatus(wifiService->isConnected(), wifiService->getSignalStrengthPercent());
             }
+            if (mqttStatusText) {
+                bool connected = wifiService->isMqttConnected();
+                if (connected) {
+                    // UTF-8 checkmark
+                    mqttStatusText->setText("MQTT \xE2\x9C\x93");
+                } else {
+                    // UTF-8 ballot X
+                    mqttStatusText->setText("MQTT \xE2\x9C\x97");
+                }
+            }
         }, config.communication.wifi.statusCheckIntervalMs);
     }
     
@@ -216,10 +226,10 @@ void RelayApplicationImpl::setupUi() {
     uiElements.push_back(logoElement);
     mainContent.setLeft(logoElement.get());
 
-    statusTextElement = std::make_shared<TextElement>();
-    statusTextElement->setText("Ready");
-    uiElements.push_back(statusTextElement);
-    mainContent.setRight(statusTextElement.get());
+    mqttStatusText = std::make_shared<TextElement>();
+    mqttStatusText->setText("MQTT...");
+    uiElements.push_back(mqttStatusText);
+    mainContent.setRight(mqttStatusText.get());
 }
 
 void RelayApplicationImpl::onLoraDataReceived(uint8_t srcId, const uint8_t* payload, uint8_t length) {
@@ -248,10 +258,6 @@ void RelayApplicationImpl::onLoraDataReceived(uint8_t srcId, const uint8_t* payl
         }
     }
 
-    // Update status text to show activity
-    if (statusTextElement) {
-        statusTextElement->setText(String("RX: ") + length + "b from " + srcId);
-    }
 }
 
 void RelayApplicationImpl::onLoraAckReceived(uint8_t srcId, uint16_t messageId) {

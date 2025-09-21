@@ -21,6 +21,7 @@ public:
     virtual void setMqttConfig(const MqttPublisherConfig& config) = 0;
     virtual bool publishMqtt(const char* topicSuffix, const uint8_t* payload, uint8_t length) = 0;
     virtual bool isMqttReady() const = 0;
+    virtual bool isMqttConnected() const = 0;
 };
 
 class WifiManagerHal : public IWifiHal {
@@ -37,6 +38,7 @@ public:
     void setMqttConfig(const MqttPublisherConfig& config) override;
     bool publishMqtt(const char* topicSuffix, const uint8_t* payload, uint8_t length) override;
     bool isMqttReady() const override;
+    bool isMqttConnected() const override;
 
 private:
     WifiManager _wifiManager;
@@ -86,4 +88,8 @@ bool WifiManagerHal::publishMqtt(const char* topicSuffix, const uint8_t* payload
 
 bool WifiManagerHal::isMqttReady() const {
     return _mqttPublisher && _mqttPublisher->isReady();
+}
+
+bool WifiManagerHal::isMqttConnected() const {
+    return _mqttPublisher && _mqttPublisher->isConnected();
 }

@@ -81,10 +81,21 @@ public:
         return client && client->connected();
     }
 
+    bool isConnected() const {
+        if (!cfg.enableMqtt) return false;
+        return client && client->connected();
+    }
+
     // Publish using baseTopic + "/" + topicSuffix
     bool publish(const char* topicSuffix, const uint8_t* payload, uint8_t length) {
-        if (!cfg.enableMqtt) return false;
-        if (!payload || length == 0) return false;
+        if (!cfg.enableMqtt) {
+            LOGW("MQTT", "Publish failed: MQTT disabled by config");
+            return false;
+        }
+        if (!payload || length == 0) {
+            LOGW("MQTT", "Publish failed: payload is empty");
+            return false;
+        }
         char topic[128];
         if (cfg.deviceTopic && cfg.deviceTopic[0] != '\0') {
             snprintf(topic, sizeof(topic), "%s/%s", cfg.baseTopic ? cfg.baseTopic : "farm/telemetry", cfg.deviceTopic);
@@ -97,12 +108,13 @@ public:
         if (client && client->connected()) {
             bool ok = client->publish(topic, (const char*)payload, (int)length, cfg.retain, (int)cfg.qos);
             if (!ok) {
-                Serial.printf("[MQTT] Publish failed to %s\n", topic);
+                LOGW("MQTT", "Publish failed to %s", topic);
             } else {
-                Serial.printf("[MQTT] Published %u bytes to %s\n", (unsigned)length, topic);
+                LOGD("MQTT", "Published %u bytes to %s", (unsigned)length, topic);
             }
             return ok;
         }
+        LOGW("MQTT", "Publish failed: MQTT not connected");
         return false;
     }
 
