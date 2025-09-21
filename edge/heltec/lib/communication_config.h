@@ -4,10 +4,7 @@
 #pragma once
 
 #include <stdint.h>
-#include "wifi_manager.h"
-#include "message.h"
-// Use shared transport types
-#include "transport_types.h"
+#include "common_message_types.h"
 
 // MQTT Configuration
 struct MqttConfig {
@@ -96,16 +93,19 @@ struct RoutingConfig {
     uint32_t routingIntervalMs = 100;  // Routing task interval
 
     // Route definitions
-    struct Route {
-        Message::Type messageType;     // Message type to route
-        TransportType sourceType;      // Source transport type
-        TransportType destinationType; // Destination transport type
+    struct RoutingRule {
+        // Matcher
+        Messaging::Message::Type messageType; // Set to Telemetry, Data, etc.
+        TransportType source;       // Set to LoRa, WiFi, etc.
+
+        // Action
+        TransportType destination; // Set to LoRa, WiFi, etc.
         bool enabled;                  // Route enabled
         uint8_t priority;              // Route priority (0=highest)
     };
 
     // Predefined routes
-    Route routes[16];                  // Maximum 16 routes
+    RoutingRule routes[16];                  // Maximum 16 routes
     uint8_t routeCount = 0;            // Number of active routes
 };
 

@@ -2,149 +2,89 @@
 
 #include <Arduino.h>
 #include <functional>
-#include <string.h>
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "freertos/semphr.h"
+#include <string>
+#include <vector>
+#include <FreeRTOS.h>
+#include <timers.h>
 
-// RTOS-backed task scheduler.
-// - Executes callbacks on a dedicated FreeRTOS task
-// - Maintains interval scheduling with wrap-around safe timings
-// - API mirrors cooperative TaskScheduler for ease of adoption
+template<typename TState>
+using RtosTaskCallback = std::function<void(TState&)>;
 
-template <typename State>
-using RtosTaskCallback = std::function<void(State &)>;
-
-template <typename State, size_t MaxTasks>
-class RtosTaskScheduler {
+template<typename TState>
+class RtosTaskManager {
 public:
-    RtosTaskScheduler()
-        : taskCount(0), schedulerTask(nullptr), running(false), statePtr(nullptr), mutex(xSemaphoreCreateMutex()) {}
+    explicit RtosTaskManager(uint32_t defaultTaskStackSize = 2048)
+        : _running(false), _state(nullptr) {}
 
-    ~RtosTaskScheduler() {
-        stop();
-        if (mutex) vSemaphoreDelete(mutex);
+    ~RtosTaskManager() {
+        for (auto& task : _tasks) {
+            if (task.timerHandle) {
+                xTimerDelete(task.timerHandle, portMAX_DELAY);
+            }
+        }
     }
 
-    bool registerTask(const char* name, RtosTaskCallback<State> callback, uint32_t intervalMs) {
-        if (running) {
-            // For simplicity, do not support runtime registration after start.
+    bool addTask(const std::string& name, RtosTaskCallback<TState> callback, uint32_t intervalMs) {
+        if (_running) {
             return false;
         }
-        if (taskCount >= MaxTasks) return false;
-
-        Task &t = tasks[taskCount++];
-        t.name = name;
-        t.callback = callback;
-        t.intervalMs = intervalMs;
-        t.nextRunMs = millis() + intervalMs;
-        t.enabled = true;
+        _tasks.emplace_back(TaskData{name, callback, intervalMs, nullptr});
         return true;
     }
 
-    void setEnabled(const char* name, bool enabled) {
-        xSemaphoreTake(mutex, pdMS_TO_TICKS(5));
-        for (size_t i = 0; i < taskCount; i++) {
-            if (tasks[i].name && name && strcmp(tasks[i].name, name) == 0) {
-                tasks[i].enabled = enabled;
-                break;
-            }
+    void start(TState& initialState) {
+        if (_running) {
+            return;
         }
-        xSemaphoreGive(mutex);
-    }
+        _state = &initialState;
+        _running = true;
 
-    bool start(State& state, const char* taskName = "scheduler", uint32_t stackWords = 4096, unsigned int priority = tskIDLE_PRIORITY + 1) {
-        if (running) return true;
-        statePtr = &state;
-        // Ensure mutex exists (create lazily if constructor-time allocation failed)
-        if (mutex == nullptr) {
-            mutex = xSemaphoreCreateMutex();
-            if (mutex == nullptr) {
-                return false;
-            }
-        }
-        running = true;
-        BaseType_t ok = xTaskCreate(&RtosTaskScheduler::taskTrampoline, taskName, stackWords, this, priority, &schedulerTask);
-        if (ok != pdPASS) {
-            running = false;
-            schedulerTask = nullptr;
-        }
-        return ok == pdPASS;
-    }
+        // Ensure the contexts vector doesn't reallocate, which would invalidate pointers.
+        _timerContexts.reserve(_tasks.size());
 
-    void stop() {
-        if (!running) return;
-        running = false;
-        TaskHandle_t handle = schedulerTask;
-        schedulerTask = nullptr;
-        if (handle) {
-            // Let the task exit naturally on next loop
+        for (auto& task : _tasks) {
+            // Create a persistent context for each timer.
+            _timerContexts.emplace_back(TimerContext{this, &task});
+            TimerContext* context = &_timerContexts.back();
+
+            task.timerHandle = xTimerCreate(
+                task.name.c_str(),
+                pdMS_TO_TICKS(task.intervalMs),
+                pdTRUE, // Auto-reload timer
+                (void*)context, // Pass the context pointer as the timer ID
+                timerCallback
+            );
+
+            if (task.timerHandle) {
+                xTimerStart(task.timerHandle, 0);
+            }
         }
     }
 
 private:
-    struct Task {
-        const char* name;
-        RtosTaskCallback<State> callback;
+    struct TaskData {
+        std::string name;
+        RtosTaskCallback<TState> callback;
         uint32_t intervalMs;
-        uint32_t nextRunMs;
-        bool enabled;
+        TimerHandle_t timerHandle;
     };
 
-    static void taskTrampoline(void* arg) {
-        static_cast<RtosTaskScheduler*>(arg)->runLoop();
-    }
+    // A dedicated context struct to safely pass state to the static C callback.
+    struct TimerContext {
+        RtosTaskManager<TState>* manager;
+        TaskData* task;
+    };
 
-    void runLoop() {
-        while (running) {
-            uint32_t now = millis();
-            uint32_t earliestDeltaMs = 1000; // cap sleep to re-evaluate frequently
-
-            // Copy of task metadata under lock to minimize hold time
-            xSemaphoreTake(mutex, pdMS_TO_TICKS(5));
-            size_t localCount = taskCount;
-            for (size_t i = 0; i < localCount; i++) {
-                Task &t = tasks[i];
-                if (!t.enabled) continue;
-                if ((int32_t)(now - t.nextRunMs) >= 0) {
-                    // Execute without holding the mutex
-                    xSemaphoreGive(mutex);
-                    if (statePtr) {
-                        statePtr->nowMs = now;
-                        t.callback(*statePtr);
-                    }
-                    xSemaphoreTake(mutex, pdMS_TO_TICKS(5));
-                    // Recompute schedule
-                    uint32_t scheduled = t.nextRunMs + t.intervalMs;
-                    if ((int32_t)(now - scheduled) >= 0) {
-                        t.nextRunMs = now + t.intervalMs;
-                    } else {
-                        t.nextRunMs = scheduled;
-                    }
-                }
-                // Track earliest time until next run
-                uint32_t delta = (int32_t)(t.nextRunMs - now) >= 0 ? (t.nextRunMs - now) : 0;
-                if (delta < earliestDeltaMs) earliestDeltaMs = delta;
-            }
-            xSemaphoreGive(mutex);
-
-            // Sleep until next expected task, with floor of 1 tick and ceiling for jitter control
-            if (earliestDeltaMs == 0) {
-                vTaskDelay(pdMS_TO_TICKS(1));
-            } else {
-                if (earliestDeltaMs > 100) earliestDeltaMs = 100; // responsiveness cap
-                vTaskDelay(pdMS_TO_TICKS(earliestDeltaMs));
-            }
+    static void timerCallback(TimerHandle_t xTimer) {
+        TimerContext* context = (TimerContext*)pvTimerGetTimerID(xTimer);
+        if (context && context->task && context->task->callback && context->manager && context->manager->_state) {
+            context->manager->_state->nowMs = millis();
+            context->task->callback(*context->manager->_state);
         }
-        vTaskDelete(nullptr);
     }
 
-    Task tasks[MaxTasks];
-    size_t taskCount;
-    TaskHandle_t schedulerTask;
-    volatile bool running;
-    State* statePtr;
-    SemaphoreHandle_t mutex;
+    std::vector<TaskData> _tasks;
+    std::vector<TimerContext> _timerContexts; // Owns the context objects
+    bool _running;
+    TState* _state;
 };
-
-

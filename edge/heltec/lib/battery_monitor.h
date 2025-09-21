@@ -1,4 +1,5 @@
-#pragma once
+#ifndef BATTERY_MONITOR_H
+#define BATTERY_MONITOR_H
 
 #include <Arduino.h>
 
@@ -29,7 +30,7 @@ struct Config {
 
 class BatteryMonitor {
 public:
-  BatteryMonitor(Config &cfg) : _cfg(cfg) {
+  explicit BatteryMonitor(const Config cfg) : _cfg(cfg) {
     _chargeState.pin = -1;
     _chargeState.activeLow = true;
     _chargeState.isChargingStable = false;
@@ -44,6 +45,8 @@ public:
     _fallbackCharging = false;
     _chargingLatchedUntilMs = 0;
   }
+
+  const Config& getConfig() const { return _cfg; }
 
   // Returns true and writes outPercent [0..100] when reading is available.
   // Returns false if adcPin is disabled or any error; caller may render outline-only.
@@ -255,7 +258,9 @@ public:
   }
 
 private:
-  Config &_cfg;
+  Config _cfg;
 };
 
 } // namespace BatteryMonitor
+
+#endif // BATTERY_MONITOR_H

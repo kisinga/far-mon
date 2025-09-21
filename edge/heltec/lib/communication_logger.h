@@ -3,10 +3,11 @@
 
 #pragma once
 
+#include "common_message_types.h"
+#include <Arduino.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include "communication_manager.h"
-#include "message.h"
 
 class CommunicationLogger {
 public:
@@ -104,17 +105,17 @@ private:
         }
 
         // Create message and route it
-        Message::Type msgType;
+        Messaging::Message::Type msgType;
         switch (level) {
-            case Level::Error: msgType = Message::Type::Debug; break; // Map to debug for now
-            case Level::Warning: msgType = Message::Type::Debug; break;
-            case Level::Info: msgType = Message::Type::Debug; break;
-            case Level::Debug: msgType = Message::Type::Debug; break;
-            case Level::Verbose: msgType = Message::Type::Debug; break;
-            default: msgType = Message::Type::Debug; break;
+            case Level::Error: msgType = Messaging::Message::Type::Debug; break; // Map to debug for now
+            case Level::Warning: msgType = Messaging::Message::Type::Debug; break;
+            case Level::Info: msgType = Messaging::Message::Type::Debug; break;
+            case Level::Debug: msgType = Messaging::Message::Type::Debug; break;
+            case Level::Verbose: msgType = Messaging::Message::Type::Debug; break;
+            default: msgType = Messaging::Message::Type::Debug; break;
         }
 
-        Message message(msgType, 0, 0xFF, false, reinterpret_cast<const uint8_t*>(buffer), strlen(buffer));
+        Messaging::Message message(msgType, 0, 0xFF, false, reinterpret_cast<const uint8_t*>(buffer), strlen(buffer));
         commManager->routeMessage(message, nullptr); // No source transport for logger
     }
 

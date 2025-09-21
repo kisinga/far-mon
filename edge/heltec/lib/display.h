@@ -1,9 +1,10 @@
+#ifndef OLEDDISPLAY_H
+#define OLEDDISPLAY_H
+
 // Header-only minimal OLED display manager for Heltec SSD1306
 // - Optional: can be disabled at runtime
 // - Supports a default homescreen renderer
 // - Supports temporary per-task debug screens with timeout
-
-#pragma once
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -181,4 +182,4 @@ class OledDisplay {
   SSD1306Wire display;
 };
 
-
+#endif // OLEDDISPLAY_H

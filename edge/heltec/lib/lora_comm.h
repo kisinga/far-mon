@@ -14,7 +14,8 @@
 // Primary implementation uses Heltec LoRaWAN HAL
 // Requires Heltec ESP32 board support package that provides LoRaWan_APP.h
 #include "LoRaWan_APP.h"
-#include "logger.h"
+#include "core_logger.h"
+#include "common_message_types.h"
 
 // Configuration defaults (override by defining before including this header)
 // Region selection (override by defining LORA_COMM_RF_FREQUENCY or a region macro before include)
@@ -135,17 +136,17 @@ class LoRaComm {
 
   // Safe begin that prevents double initialization
   // Returns true if initialization was performed, false if already initialized
-  bool safeBegin(Mode m, uint8_t id, bool initBoard = true) {
+  bool safeBegin(Mode m, uint8_t id) {
     if (initialized) {
       return false; // Already initialized
     }
-    unsafeBegin(m, id, initBoard);
+    unsafeBegin(m, id);
     return true;
   }
 
   // Backwards-compatible begin wrapper used by transports
-  void begin(Mode m, uint8_t id, bool initBoard = true) {
-    (void)safeBegin(m, id, initBoard);
+  void begin(Mode m, uint8_t id) {
+    (void)safeBegin(m, id);
   }
 
   // Expose selected APIs used by services/transports
@@ -174,7 +175,7 @@ class LoRaComm {
   }
   void tick(uint32_t nowMs) {
     lastNowMs = nowMs;
-    Radio.IrqProcess();
+    // Radio.IrqProcess(); // This should be called from the main application loop/task
     // TX watchdog: recover if TX completion IRQ is missed
     if (radioState == State::Tx) {
       if ((int32_t)(nowMs - lastRadioActivityMs) > (int32_t)LORA_COMM_TX_GUARD_MS) {
@@ -305,13 +306,9 @@ class LoRaComm {
 
 private:
   // Internal unsafe begin - should not be called directly
-  void unsafeBegin(Mode m, uint8_t id, bool initBoard = true) {
+  void unsafeBegin(Mode m, uint8_t id) {
     mode = m;
     selfId = id;
-
-    if (initBoard) {
-      Mcu.begin(HELTEC_BOARD, SLOW_CLK_TPYE);
-    }
 
     radioEvents.TxDone = &HandleTxDone;
     radioEvents.TxTimeout = &HandleTxTimeout;
@@ -756,5 +753,3 @@ void loop() {
   delay(1);
 }
 #endif
-
-
