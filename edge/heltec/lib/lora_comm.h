@@ -133,6 +133,8 @@ class LoRaComm {
         outboxCount(0), nextMessageId(1), awaitingAckMsgId(0), awaitingAckSrcId(0),
         radioState(State::Idle), autoPingEnabled(true), stallActive(false), initialized(false) {
     memset(peers, 0, sizeof(peers));
+    lastAckOkMs = 0;
+    lastRssiDbm = std::numeric_limits<int16_t>::min();
   }
 
   // Safe begin that prevents double initialization

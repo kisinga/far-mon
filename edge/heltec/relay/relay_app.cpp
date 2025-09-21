@@ -22,11 +22,6 @@
 #include "config.h"
 #include <memory>
 
-// Legacy drivers (HAL dependencies)
-#include "lib/display.h"
-#include "lib/lora_comm.h"
-#include "lib/wifi_manager.h"
-#include "lib/battery_monitor.h"
 
 class RelayApplicationImpl {
 public:

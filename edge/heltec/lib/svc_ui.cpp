@@ -37,6 +37,5 @@ void UiService::tick() {
 
 void UiService::drawSplashScreen() {
     // The clear is now handled in tick()
-    // TODO: Fix this. The HAL doesn't have a drawXbm method.
     _displayHal.drawXbm(32, 0, 64, 64, logo_bits);
 }

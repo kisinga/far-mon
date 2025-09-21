@@ -98,44 +98,12 @@ class OledDisplay {
   // Optional: for boards where Vext macro is unavailable, provide the pin explicitly
   void setVextPinOverride(int8_t pin) { vextPinOverride = pin; }
 
-  // DEPRECATED: show a temporary debug screen. Will be removed.
-  void showDebug(RenderCallback cb, void *ctx, uint32_t nowMs, uint32_t durationMs) {
-    if (!enabled) return;
-    debugCb = cb;
-    debugCtx = ctx;
-    debugUntilMs = nowMs + durationMs;
-  }
-  
-  // DEPRECATED: Convenience for showDebug. Will be removed.
-  void showDebugFor(RenderCallback cb, void *ctx, uint32_t durationMs) {
-    showDebug(cb, ctx, millis(), durationMs);
-  }
-
-  // DEPRECATED: Clear any active debug overlay immediately. Will be removed.
-  void clearDebug() {
-    debugCb = nullptr;
-    debugCtx = nullptr;
-    debugUntilMs = 0;
-  }
 
   // Call periodically to update the display. Cheap if disabled.
   void tick(uint32_t nowMs) {
     if (!enabled) return;
 
     // This method is now a shell. The UIManager handles all drawing.
-    // However, it's kept for backward compatibility with the logger's debug overlay.
-    // TODO: Refactor logger to use a UIElement for debug overlays.
-
-    if (debugCb != nullptr && (int32_t)(nowMs - debugUntilMs) < 0) {
-      display.clear();
-      debugCb(display, debugCtx);
-      display.display();
-    } else if (debugUntilMs != 0) {
-      // Clear debug state once expired
-      debugCb = nullptr;
-      debugCtx = nullptr;
-      debugUntilMs = 0;
-    }
   }
 
   SSD1306Wire& getDisplay() { return display; }
@@ -173,11 +141,6 @@ class OledDisplay {
   bool initialized;
   
   int8_t vextPinOverride = -1; // -1 means use Vext macro if available
-  
-  // Debug overlay support (to be refactored)
-  RenderCallback debugCb = nullptr;
-  void *debugCtx = nullptr;
-  uint32_t debugUntilMs = 0;
   
   SSD1306Wire display;
 };
