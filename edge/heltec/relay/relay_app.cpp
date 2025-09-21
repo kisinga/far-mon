@@ -85,6 +85,7 @@ void RelayApplicationImpl::initialize() {
     displayHal = std::make_unique<OledDisplayHal>();
     loraHal = std::make_unique<LoRaCommHal>();
     loraHal->setPeerTimeout(config.peerTimeoutMs);
+    loraHal->setVerbose(config.communication.usb.verboseLogging);
     batteryHal = std::make_unique<BatteryMonitorHal>(config.battery);
 
     // Create services
@@ -223,16 +224,27 @@ void RelayApplicationImpl::setupUi() {
 
 void RelayApplicationImpl::onLoraDataReceived(uint8_t srcId, const uint8_t* payload, uint8_t length) {
     // Process received LoRa data and forward to MQTT if WiFi is available
-    if (config.communication.wifi.enableWifi && wifiHal->isMqttReady()) {
+    if (!config.communication.wifi.enableWifi) {
+        LOGD("Relay", "WiFi disabled, cannot forward %u bytes from device %u to MQTT", length, srcId);
+    } else if (!wifiHal->isMqttReady()) {
+        LOGD("Relay", "MQTT not ready, cannot forward %u bytes from device %u (WiFi state: %s)",
+             length, srcId, wifiHal->isConnected() ? "connected" : "disconnected");
+    } else {
         // Format MQTT topic as "farm/telemetry/remote-{srcId}"
         char topicSuffix[32];
         snprintf(topicSuffix, sizeof(topicSuffix), "remote-%u", srcId);
+        char fullTopic[64];
+        snprintf(fullTopic, sizeof(fullTopic), "farm/telemetry/%s", topicSuffix);
 
         // Forward the sensor data to MQTT
+        LOGD("Relay", "Attempting to publish %u bytes from device %u to MQTT topic '%s'",
+             length, srcId, fullTopic);
         if (!wifiHal->publishMqtt(topicSuffix, payload, length)) {
-            LOGW("Relay", "Failed to forward sensor data from device %u to MQTT", srcId);
+            LOGW("Relay", "Failed to publish %u bytes from device %u to MQTT topic '%s'",
+                 length, srcId, fullTopic);
         } else {
-            LOGI("Relay", "Forwarded %u bytes from device %u to MQTT", length, srcId);
+            LOGI("Relay", "Successfully published %u bytes from device %u to MQTT topic '%s'",
+                 length, srcId, fullTopic);
         }
     }
 

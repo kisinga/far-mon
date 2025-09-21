@@ -92,6 +92,7 @@ void RemoteApplicationImpl::initialize() {
     LOGI("Remote", "Creating HALs");
     displayHal = std::make_unique<OledDisplayHal>();
     loraHal = std::make_unique<LoRaCommHal>();
+    loraHal->setVerbose(config.communication.usb.verboseLogging);
     batteryHal = std::make_unique<BatteryMonitorHal>(config.battery);
 
     LOGI("Remote", "Creating services");

@@ -20,6 +20,7 @@ public:
     virtual void setOnDataReceived(OnDataReceived cb) = 0;
     virtual void setOnAckReceived(OnAckReceived cb) = 0;
     virtual void setPeerTimeout(uint32_t timeoutMs) = 0;
+    virtual void setVerbose(bool verbose) = 0;
 
     virtual bool isConnected() const = 0;
     virtual int16_t getLastRssiDbm() const = 0;
@@ -42,6 +43,7 @@ public:
     void setOnDataReceived(OnDataReceived cb) override;
     void setOnAckReceived(OnAckReceived cb) override;
     void setPeerTimeout(uint32_t timeoutMs) override;
+    void setVerbose(bool verbose) override;
     bool isConnected() const override;
     int16_t getLastRssiDbm() const override;
     size_t getPeerCount() const override;
@@ -81,6 +83,10 @@ void LoRaCommHal::setOnAckReceived(OnAckReceived cb) {
 
 void LoRaCommHal::setPeerTimeout(uint32_t timeoutMs) {
     _lora.setPeerTimeout(timeoutMs);
+}
+
+void LoRaCommHal::setVerbose(bool verbose) {
+    _lora.setVerbose(verbose);
 }
 
 bool LoRaCommHal::isConnected() const {

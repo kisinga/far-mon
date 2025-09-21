@@ -27,6 +27,7 @@ struct UsbConfig {
     bool enableTimestamp = true;       // Include timestamps in debug output
     bool enableColorOutput = false;    // Enable ANSI color codes (if supported)
     uint8_t debugLevel = 3;            // Default debug level (0-5, higher = more verbose)
+    bool verboseLogging = true;        // System-wide verbose logging toggle
 
     // Advanced settings
     uint16_t rxBufferSize = 256;       // Receive buffer size

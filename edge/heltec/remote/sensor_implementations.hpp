@@ -29,11 +29,20 @@ LoRaBatchTransmitter::LoRaBatchTransmitter(ILoRaHal* loraHal, uint8_t deviceId)
 }
 
 bool LoRaBatchTransmitter::transmitBatch(const std::vector<SensorReading>& readings) {
-    if (!_loraHal || readings.empty()) return false;
+    if (!_loraHal || readings.empty()) {
+        LOGD("LoRaBatchTransmitter", "Cannot transmit: %s",
+             !_loraHal ? "LoRa HAL not available" : "no sensor readings");
+        return false;
+    }
 
     String payload = formatReadings(readings);
+    LOGD("LoRaBatchTransmitter", "Formatted %u sensor readings into payload: '%s'",
+         (unsigned)readings.size(), payload.c_str());
 
-    if (payload.length() == 0) return false;
+    if (payload.length() == 0) {
+        LOGW("LoRaBatchTransmitter", "Failed to format sensor readings for transmission");
+        return false;
+    }
 
     // Create a telemetry message
     Messaging::Message message(
@@ -46,10 +55,22 @@ bool LoRaBatchTransmitter::transmitBatch(const std::vector<SensorReading>& readi
     );
 
     // Send as LoRa message using the proper message format
-    return _loraHal->sendData(message.getMetadata().destinationId,
-                             message.getPayload(),
-                             message.getLength(),
-                             message.getMetadata().requiresAck);
+    LOGD("LoRaBatchTransmitter", "Sending telemetry: device=%u, dest=%u, len=%u, ack=%s",
+         _deviceId, message.getMetadata().destinationId, message.getLength(),
+         message.getMetadata().requiresAck ? "required" : "not required");
+
+    bool success = _loraHal->sendData(message.getMetadata().destinationId,
+                                     message.getPayload(),
+                                     message.getLength(),
+                                     message.getMetadata().requiresAck);
+
+    if (success) {
+        LOGI("LoRaBatchTransmitter", "Successfully queued telemetry message for transmission");
+    } else {
+        LOGW("LoRaBatchTransmitter", "Failed to queue telemetry message for transmission");
+    }
+
+    return success;
 }
 
 bool LoRaBatchTransmitter::isReady() const {

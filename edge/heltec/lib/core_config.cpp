@@ -39,6 +39,7 @@ DeviceConfig DeviceConfigFactory::createBaseConfig(uint8_t deviceId, DeviceType 
 
     // Apply common USB settings
     cfg.communication.usb.enableTimestamp = true;
+    cfg.communication.usb.verboseLogging = true;
     cfg.communication.usb.rxBufferSize = 256;
     cfg.communication.usb.txBufferSize = 256;
 

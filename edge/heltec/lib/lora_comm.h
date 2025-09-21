@@ -239,7 +239,9 @@ class LoRaComm {
       uint8_t frame[8];
       uint8_t len = buildFrame(frame, FrameType::Ack, selfId, rxAckTargetId, rxAckMessageId, nullptr, 0, /*flags=*/0);
       if (Logger::isEnabled(verboseEnabled ? Logger::Level::Verbose : (Logger::Level)logLevel)) {
-        Logger::printf(Logger::Level::Debug, "lora", "TX ACK to=%u msgId=%u", rxAckTargetId, rxAckMessageId);
+        Logger::printf(Logger::Level::Debug, "lora", "TX ACK to=%u msgId=%u (responding to DATA)%s",
+                       rxAckTargetId, rxAckMessageId,
+                       (connectionState == ConnectionState::Connected ? " (connected)" : ""));
       }
       sendFrame(frame, len);
       rxPendingAck = false;
@@ -257,12 +259,16 @@ class LoRaComm {
           m.nextAttemptMs = nowMs + LORA_COMM_ACK_TIMEOUT_MS;
           awaitingAckMsgId = m.msgId;
           awaitingAckSrcId = 0; // not used; we match by msgId only
+          Logger::printf(Logger::Level::Debug, "lora", "TX retry %u/%u: msgId=%u to=%u%s",
+                         (unsigned)m.attempts, LORA_COMM_MAX_RETRIES, m.msgId, m.destId,
+                         (connectionState == ConnectionState::Connected ? " (connected)" : ""));
         }
         statsTx++;
         if (outboxCount > statsOutboxMax) statsOutboxMax = outboxCount;
-        Logger::printf(Logger::Level::Debug, "lora", "TX DATA to=%u msgId=%u%s",
-                       m.destId, m.msgId,
-                       (m.requireAck ? " waitAck" : ""));
+        Logger::printf(Logger::Level::Debug, "lora", "TX DATA to=%u msgId=%u len=%u%s%s",
+                       m.destId, m.msgId, m.length,
+                       (m.requireAck ? " waitAck" : ""),
+                       (connectionState == ConnectionState::Connected ? " (connected)" : ""));
         currentTxMsgId = m.msgId;
         sendFrame(m.buf, m.length);
         return;
@@ -399,6 +405,7 @@ class LoRaComm {
                 if (nowMs >= nextReconnectAttemptMs) {
                     connectionState = ConnectionState::Connecting;
                     connectionAttemptStartMs = nowMs;
+                    Logger::printf(Logger::Level::Info, "lora", "Starting connection attempt to master %u", masterNodeId);
                     if (sendData(masterNodeId, nullptr, 0, true)) {
                         Logger::printf(Logger::Level::Info, "lora", "Sent reconnection frame to master %u", masterNodeId);
                     } else {
@@ -415,7 +422,8 @@ class LoRaComm {
                 // within the total retry period, assume failure and go back to disconnected.
                 const uint32_t connectingTimeout = (LORA_COMM_ACK_TIMEOUT_MS * LORA_COMM_MAX_RETRIES) + 2000; // Total retry time + 2s buffer
                 if (nowMs - connectionAttemptStartMs > connectingTimeout) {
-                    Logger::printf(Logger::Level::Warn, "lora", "Connection attempt timed out.");
+                    Logger::printf(Logger::Level::Warn, "lora", "Connection attempt to master %u timed out after %u ms",
+                                   masterNodeId, (unsigned)(nowMs - connectionAttemptStartMs));
                     connectionState = ConnectionState::Disconnected;
                     nextReconnectAttemptMs = nowMs + LORA_COMM_RECONNECT_ATTEMPT_MS; // Schedule next full attempt
                 }
@@ -584,7 +592,8 @@ private:
           } else {
             m.inUse = false;
             statsDropped++;
-            Logger::printf(Logger::Level::Warn, "lora", "drop (timeout) msgId=%u", m.msgId);
+            Logger::printf(Logger::Level::Warn, "lora", "drop (timeout) msgId=%u after %u attempts",
+                           m.msgId, (unsigned)m.attempts);
           }
           break;
         }
@@ -635,7 +644,8 @@ private:
         // ACK for our outgoing message
         if (onAckCb != nullptr) onAckCb(src, msgId);
         statsRxAck++;
-        Logger::printf(Logger::Level::Debug, "lora", "RX ACK from=%u msgId=%u", src, msgId);
+        Logger::printf(Logger::Level::Debug, "lora", "RX ACK from=%u msgId=%u%s", src, msgId,
+                       (mode == Mode::Slave) ? " (slave mode)" : " (master mode)");
         if (mode == Mode::Slave) {
           lastAckOkMs = millis();
           // Let the tick handler manage connection state transitions.
@@ -656,7 +666,8 @@ private:
           rxPendingAck = true;
         }
         statsRxData++;
-        Logger::printf(Logger::Level::Info, "lora", "RX DATA from=%u len=%u", src, appLen);
+        Logger::printf(Logger::Level::Info, "lora", "RX DATA from=%u len=%u%s", src, appLen,
+                       (flags & kFlagRequireAck) ? " (ACK requested)" : "");
         if (onDataCb != nullptr && appLen > 0) {
           onDataCb(src, payload + kHeaderSize, appLen);
         }
