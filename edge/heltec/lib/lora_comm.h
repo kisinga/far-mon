@@ -179,9 +179,6 @@ class LoRaComm {
     lastNowMs = nowMs;
     // Radio.IrqProcess(); // This should be called from the main application loop/task
 
-    // Connection state management
-    updateConnectionState(nowMs);
-
     // TX watchdog: recover if TX completion IRQ is missed
     if (radioState == State::Tx) {
       if ((int32_t)(nowMs - lastRadioActivityMs) > (int32_t)LORA_COMM_TX_GUARD_MS) {
@@ -216,7 +213,8 @@ class LoRaComm {
         enterRxMode();
       }
     }
-    // Update master peer TTLs
+    
+    // Update peer TTLs. This is critical for connection state management.
     if (mode == Mode::Master) {
       for (size_t i = 0; i < LORA_COMM_MAX_PEERS; i++) {
         if (peers[i].peerId != 0) {
@@ -224,7 +222,18 @@ class LoRaComm {
           peers[i].connected = alive;
         }
       }
+    } else { // Slave mode
+        // Slaves only track the master to help with connection state logic
+        for (size_t i = 0; i < LORA_COMM_MAX_PEERS; i++) {
+            if (peers[i].peerId == masterNodeId) {
+                peers[i].connected = ((int32_t)(nowMs - peers[i].lastSeenMs) < (int32_t)peerTimeoutMs);
+                break; // Found master, no need to check others
+            }
+        }
     }
+
+    updateConnectionState(nowMs);
+
     // Priority 1: send pending ACK as soon as radio is idle
     if (rxPendingAck && radioState != State::Tx) {
       uint8_t frame[8];
@@ -237,6 +246,8 @@ class LoRaComm {
       return; // wait for TX done
     }
     // Priority 2: transmit or retry queued messages
+    // In continuous RX mode, we can transmit even when radioState is Rx
+    // The radio will automatically switch to TX when sending
     if (radioState != State::Tx) {
       int idx = selectNextOutboxIndex(nowMs);
       if (idx >= 0) {
@@ -256,15 +267,30 @@ class LoRaComm {
         sendFrame(m.buf, m.length);
         return;
       }
-      if (outboxCount > 0) {
-        if (!stallActive) {
-          stallActive = true;
-          Logger::printf(Logger::Level::Warn, "lora", "stall rs=%d obx=%u", (int)radioState, outboxCount);
-        }
-      } else if (stallActive) {
+    }
+
+    // If we reached here, it means we have nothing to send right now.
+    // Now check for stall condition.
+    if (outboxCount > 0 && radioState != State::Tx) {
+      // We have messages but none are ready to send.
+      if (stallDetectStartMs == 0) {
+        stallDetectStartMs = nowMs;
+      }
+    
+      // A stall is when we have items in the outbox, but nothing is eligible for transmission
+      // for a period longer than our ACK timeout. This distinguishes waiting for an ACK
+      // from a true stall.
+      if (!stallActive && (nowMs - stallDetectStartMs) > (LORA_COMM_ACK_TIMEOUT_MS + 200)) { // 200ms buffer
+        stallActive = true;
+        Logger::printf(Logger::Level::Warn, "lora", "stall detected: obx=%u, rs=%d", outboxCount, (int)radioState);
+      }
+    } else {
+      // Outbox is empty or we are transmitting. Reset stall detection.
+      if (stallActive) {
         stallActive = false;
         Logger::printf(Logger::Level::Info, "lora", "stall cleared");
       }
+      stallDetectStartMs = 0; // Reset timer
     }
     // Cleanup: drop expired messages
     compactOutbox();
@@ -312,8 +338,15 @@ class LoRaComm {
   }
 
   void forceReconnect() {
-    connectionState = ConnectionState::Connecting;
-    nextReconnectAttemptMs = millis() + LORA_COMM_RECONNECT_ATTEMPT_MS;
+    if (mode == Mode::Slave) {
+        connectionState = ConnectionState::Connecting;
+        nextReconnectAttemptMs = millis() + LORA_COMM_RECONNECT_ATTEMPT_MS;
+    }
+    // For Master, there's no "reconnect" action to take. It just listens.
+    // We can log this event for debugging if needed.
+    else {
+        Logger::printf(Logger::Level::Debug, "lora", "forceReconnect called on Master - no action taken.");
+    }
   }
 
   void updateConnectionState(uint32_t nowMs) {
@@ -329,25 +362,65 @@ class LoRaComm {
       }
       connectionState = hasActivePeers ? ConnectionState::Connected : ConnectionState::Disconnected;
     } else {
-      // Slave connection logic
-      if (lastAckOkMs != 0 && ((int32_t)(nowMs - lastAckOkMs) < (int32_t)peerTimeoutMs)) {
-        connectionState = ConnectionState::Connected;
-      } else if (connectionState == ConnectionState::Connected) {
-        // Transition from connected to disconnected
-        connectionState = ConnectionState::Disconnected;
-        nextReconnectAttemptMs = nowMs + LORA_COMM_RECONNECT_ATTEMPT_MS;
-        Logger::printf(Logger::Level::Info, "lora", "Connection lost, will attempt reconnect");
-      }
+      // Slave connection logic - more robust state management
+      if (mode == Mode::Slave) {
+        bool hasRecentActivity = false;
 
-      // Attempt reconnection if disconnected
-      if (connectionState == ConnectionState::Disconnected &&
-          nowMs >= nextReconnectAttemptMs) {
-        connectionState = ConnectionState::Connecting;
-        // Send a registration frame to master
-        if (sendData(masterNodeId, nullptr, 0, true)) {
-          Logger::printf(Logger::Level::Info, "lora", "Sent reconnection frame to master %u", masterNodeId);
+        // Check for recent ACKs or any frame from the master
+        if (lastAckOkMs != 0 && ((int32_t)(nowMs - lastAckOkMs) < (int32_t)peerTimeoutMs)) {
+            hasRecentActivity = true;
+        } else {
+            for (size_t i = 0; i < LORA_COMM_MAX_PEERS; i++) {
+                if (peers[i].peerId == masterNodeId && peers[i].connected) {
+                    hasRecentActivity = true;
+                    break;
+                }
+            }
         }
-        nextReconnectAttemptMs = nowMs + LORA_COMM_RECONNECT_ATTEMPT_MS;
+
+        if (hasRecentActivity) {
+            if (connectionState != ConnectionState::Connected) {
+                connectionState = ConnectionState::Connected;
+                Logger::printf(Logger::Level::Info, "lora", "Connection established with master %u", masterNodeId);
+            }
+            return; // Healthy state, early exit.
+        }
+
+        // If we get here, there is no recent activity from the master.
+        switch (connectionState) {
+            case ConnectionState::Connected:
+                // We were connected, but have now lost contact.
+                connectionState = ConnectionState::Disconnected;
+                nextReconnectAttemptMs = nowMs; // Trigger immediate reconnect attempt
+                Logger::printf(Logger::Level::Info, "lora", "Connection lost, will attempt reconnect");
+                break;
+
+            case ConnectionState::Disconnected:
+                if (nowMs >= nextReconnectAttemptMs) {
+                    connectionState = ConnectionState::Connecting;
+                    connectionAttemptStartMs = nowMs;
+                    if (sendData(masterNodeId, nullptr, 0, true)) {
+                        Logger::printf(Logger::Level::Info, "lora", "Sent reconnection frame to master %u", masterNodeId);
+                    } else {
+                        // Outbox was full, couldn't send. Revert to disconnected and try again shortly.
+                        Logger::printf(Logger::Level::Warn, "lora", "Outbox full, delaying reconnect attempt.");
+                        connectionState = ConnectionState::Disconnected;
+                        nextReconnectAttemptMs = nowMs + 500; // Retry quickly
+                    }
+                }
+                break;
+
+            case ConnectionState::Connecting:
+                // Timeout for the connecting state. If we don't get an ACK or any frame
+                // within the total retry period, assume failure and go back to disconnected.
+                const uint32_t connectingTimeout = (LORA_COMM_ACK_TIMEOUT_MS * LORA_COMM_MAX_RETRIES) + 2000; // Total retry time + 2s buffer
+                if (nowMs - connectionAttemptStartMs > connectingTimeout) {
+                    Logger::printf(Logger::Level::Warn, "lora", "Connection attempt timed out.");
+                    connectionState = ConnectionState::Disconnected;
+                    nextReconnectAttemptMs = nowMs + LORA_COMM_RECONNECT_ATTEMPT_MS; // Schedule next full attempt
+                }
+                break;
+        }
       }
     }
   }
@@ -426,6 +499,7 @@ private:
   uint32_t nextReconnectAttemptMs;
   uint8_t masterNodeId;
   ConnectionState connectionState;
+  uint32_t connectionAttemptStartMs = 0;
 
   OutMsg outbox[LORA_COMM_MAX_OUTBOX];
   uint8_t outboxCount;
@@ -444,6 +518,7 @@ private:
   bool verboseEnabled = false;
   uint8_t logLevel = (uint8_t)Logger::Level::Info;
   bool stallActive;
+  uint32_t stallDetectStartMs = 0; // For improved stall detection
 
   // Aggregated stats for low-noise periodic reporting
   uint16_t statsRxData = 0;
@@ -551,10 +626,9 @@ private:
       return;
     }
 
-    // Track peers (master) and basic presence (any valid frame counts)
-    if (mode == Mode::Master) {
-      notePeerSeen(src, millis());
-    }
+    // Track peers and basic presence (any valid frame counts)
+    // This is important for both master and slave connection state tracking
+    notePeerSeen(src, millis());
 
     switch (type) {
       case FrameType::Ack: {
@@ -564,15 +638,11 @@ private:
         Logger::printf(Logger::Level::Debug, "lora", "RX ACK from=%u msgId=%u", src, msgId);
         if (mode == Mode::Slave) {
           lastAckOkMs = millis();
-          // Update connection state when we receive ACKs
-          if (connectionState != ConnectionState::Connected) {
-            connectionState = ConnectionState::Connected;
-            Logger::printf(Logger::Level::Info, "lora", "Connection established with master %u", src);
-          }
+          // Let the tick handler manage connection state transitions.
+          // Setting state here creates race conditions.
         } else if (mode == Mode::Master) {
-          // Master should also update connection state when receiving ACKs
-          // This indicates active communication from peers
-          notePeerSeen(src, millis());
+          // Master connection state is updated in updateConnectionState based on peer activity
+          // notePeerSeen is already called above for all frame types
         }
         // Remove matching outbox entry
         removeOutboxByMsgId(msgId);
@@ -602,6 +672,7 @@ private:
   void enterRxMode() {
     Radio.Rx(0); // continuous RX
     radioState = State::Rx;
+    lastRadioActivityMs = millis();
   }
 
   uint16_t allocateMsgId() {
@@ -701,7 +772,7 @@ private:
     for (size_t i = 0; i < LORA_COMM_MAX_PEERS; i++) {
       if (peers[i].peerId == peerId) {
         peers[i].lastSeenMs = nowMs;
-        peers[i].connected = true;
+        // Let the tick handler manage the 'connected' state based on timeout.
         return;
       }
     }
@@ -710,7 +781,7 @@ private:
       if (peers[i].peerId == 0) {
         peers[i].peerId = peerId;
         peers[i].lastSeenMs = nowMs;
-        peers[i].connected = true;
+        // The connected flag will be set by the tick handler on its next run.
         return;
       }
     }
@@ -722,7 +793,7 @@ private:
     }
     peers[idx].peerId = peerId;
     peers[idx].lastSeenMs = nowMs;
-    peers[idx].connected = true;
+    // The connected flag will be set by the tick handler on its next run.
   }
 
   void reinitializeRadio() {

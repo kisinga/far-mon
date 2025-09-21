@@ -123,6 +123,7 @@ void RemoteApplicationImpl::initialize() {
     LOGI("Remote", "LoRa initialized");
     loraHal->setOnAckReceived(&RemoteApplicationImpl::staticOnAckReceived);
     loraHal->setMasterNodeId(config.masterNodeId);
+    loraHal->setPeerTimeout(config.peerTimeoutMs);
     LOGI("Remote", "Sending registration frame...");
     loraHal->sendData(config.masterNodeId, nullptr, 0, true);
 
@@ -168,7 +169,9 @@ void RemoteApplicationImpl::initialize() {
     }, 50);
     if (sensorConfig.enableSensorSystem) {
         scheduler.registerTask("sensors", [this](CommonAppState& state){
-            sensorManager.update(state.nowMs);
+            if (loraService->isConnected()) {
+              sensorManager.update(state.nowMs);
+            }
         }, config.telemetryReportIntervalMs);
     }
     scheduler.registerTask("lora_watchdog", [this](CommonAppState& state){

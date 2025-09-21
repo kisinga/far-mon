@@ -162,16 +162,6 @@ void RelayApplicationImpl::initialize() {
             peerStatusElement->setPeerCount(hasActivePeers ? loraService->getPeerCount() : 0);
         }
     }, 50);
-
-    // Add connection monitoring task for master to handle peer reconnections
-    scheduler.registerTask("lora_connection_monitor", [this](CommonAppState& state){
-        auto connectionState = loraService->getConnectionState();
-        if (connectionState == ILoRaService::ConnectionState::Disconnected) {
-            // If master is disconnected, try to force reconnect
-            LOGW("Relay", "No active peers detected, attempting to reconnect...");
-            loraService->forceReconnect();
-        }
-    }, 10000); // Check every 10 seconds
     
     if (config.communication.wifi.enableWifi && wifiService) {
         scheduler.registerTask("wifi", [this](CommonAppState& state){

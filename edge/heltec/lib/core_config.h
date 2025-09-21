@@ -78,6 +78,7 @@ struct RemoteConfig : DeviceConfig {
     uint8_t masterNodeId = 1;
     bool useCalibratedAdc = true;  // Use analogReadMilliVolts() for better accuracy
     uint32_t maxQuietTimeMs = 150000; // 2.5 minutes
+    uint32_t peerTimeoutMs = 125000; // A bit longer than relay's, to ensure relay drops first
 
     RemoteConfig() = default;
 
