@@ -20,6 +20,7 @@ inline bool g_serialEnabled = true;
 inline Level g_level = Level::Info;
 inline bool g_verbose = false;
 inline const char *g_deviceId = nullptr;
+inline char g_deviceIdBuf[16] = {0};
 inline OverlayCtx g_overlayCtx; // reused buffer
 
 // Forward declarations to allow usage before definitions
@@ -34,7 +35,13 @@ inline void begin(bool enableSerial, const char *deviceId) {
 // Internal initialization function - not exposed publicly to prevent unsafe usage
 namespace internal {
 inline void initializeUnsafe(const char *deviceId) {
-  begin(true, deviceId);
+  if (deviceId) {
+    strncpy(g_deviceIdBuf, deviceId, sizeof(g_deviceIdBuf) - 1);
+    g_deviceIdBuf[sizeof(g_deviceIdBuf) - 1] = '\0';
+    begin(true, g_deviceIdBuf);
+  } else {
+    begin(true, nullptr);
+  }
   setLevel(Level::Info);
   setVerbose(false);
 }
@@ -64,16 +71,25 @@ inline void vprintf(Level level, const char *tag, const char *fmt, va_list ap) {
   if (!isEnabled(level)) return;
   if (g_serialEnabled) {
     char buf[160];
-    vsnprintf(buf, sizeof(buf), fmt, ap);
-    Serial.print('[');
-    if (tag) Serial.print(tag); else Serial.print(F("log"));
-    Serial.print(']');
-    if (g_deviceId) {
-      Serial.print(' ');
-      Serial.print(g_deviceId);
+    int len = vsnprintf(buf, sizeof(buf) - 1, fmt, ap);
+    if (len >= 0 && len < (int)sizeof(buf) - 1) {
+      buf[len] = '\0'; // Ensure null termination
+    } else {
+      buf[sizeof(buf) - 1] = '\0'; // Safety fallback
     }
-    Serial.print(' ');
-    Serial.println(buf);
+
+    // Only print if Serial is available
+    if (Serial) {
+      Serial.print('[');
+      if (tag) Serial.print(tag); else Serial.print(F("log"));
+      Serial.print(']');
+      if (g_deviceId) {
+        Serial.print(' ');
+        Serial.print(g_deviceId);
+      }
+      Serial.print(' ');
+      Serial.println(buf);
+    }
   }
 }
 
@@ -88,9 +104,18 @@ inline void rawf(Level level, const char *fmt, ...) {
   if (!isEnabled(level) || !g_serialEnabled) return;
   char buf[160];
   va_list ap; va_start(ap, fmt);
-  vsnprintf(buf, sizeof(buf), fmt, ap);
+  int len = vsnprintf(buf, sizeof(buf) - 1, fmt, ap);
   va_end(ap);
-  Serial.println(buf);
+  if (len >= 0 && len < (int)sizeof(buf) - 1) {
+    buf[len] = '\0'; // Ensure null termination
+  } else {
+    buf[sizeof(buf) - 1] = '\0'; // Safety fallback
+  }
+
+  // Only print if Serial is available
+  if (Serial) {
+    Serial.println(buf);
+  }
 }
 
 } // namespace Logger

@@ -31,66 +31,13 @@ public:
     
     // Public update API used by services/transports
     void update(uint32_t nowMs) {
-        // Periodic reconnection attempts with backoff if disconnected
-        if (!isConnected()) {
-            // Initialize backoff window on first use
-            if (currentReconnectBackoffMs == 0) {
-                currentReconnectBackoffMs = cfg.reconnectIntervalMs > 0 ? cfg.reconnectIntervalMs : 1000;
-                if (currentReconnectBackoffMs > kMaxReconnectBackoffMs) currentReconnectBackoffMs = kMaxReconnectBackoffMs;
-                Serial.print(F("[WiFi] DEBUG "));
-                Serial.printf("Initialized reconnection backoff to %lums\n", currentReconnectBackoffMs);
-            }
-
-            if (nowMs - lastReconnectAttempt >= currentReconnectBackoffMs) {
-                Serial.print(F("[WiFi] INFO "));
-                Serial.println(F("Attempting to reconnect..."));
-                Serial.print(F("[WiFi] DEBUG "));
-                Serial.printf("Current backoff: %lums, next attempt in: %lums\n",
-                     currentReconnectBackoffMs, currentReconnectBackoffMs * 2);
-
-                WiFi.reconnect();
-                lastReconnectAttempt = nowMs;
-
-                // Exponential backoff capped at 15s
-                uint32_t next = currentReconnectBackoffMs * 2;
-                currentReconnectBackoffMs = next > kMaxReconnectBackoffMs ? kMaxReconnectBackoffMs : next;
-
-                Serial.print(F("[WiFi] DEBUG "));
-                Serial.printf("Next reconnection attempt in %lums (max: %lums)\n",
-                     currentReconnectBackoffMs, kMaxReconnectBackoffMs);
-            }
-        } else {
-            // Reset backoff once connected
-            currentReconnectBackoffMs = cfg.reconnectIntervalMs > 0 ? cfg.reconnectIntervalMs : 1000;
-            if (currentReconnectBackoffMs > kMaxReconnectBackoffMs) currentReconnectBackoffMs = kMaxReconnectBackoffMs;
-
-            // Log successful connection recovery
-            static bool wasDisconnected = false;
-            if (wasDisconnected) {
-                Serial.print(F("[WiFi] INFO "));
-                Serial.println(F("Connection restored successfully"));
-                wasDisconnected = false;
-            }
-        }
-
-        // Track disconnection status
-        static bool wasDisconnected = false;
-        if (!isConnected() && !wasDisconnected) {
-            Serial.print(F("[WiFi] WARN "));
-            Serial.println(F("Connection lost - will attempt to reconnect"));
-            wasDisconnected = true;
-        } else if (isConnected() && wasDisconnected) {
-            wasDisconnected = false;
-        }
-
-        // Update cached status periodically
+        // The ESP32 WiFi stack handles auto-reconnection automatically.
+        // We just need to periodically check the status.
         if (nowMs - lastStatusCheck >= cfg.statusCheckIntervalMs) {
             lastStatusCheck = nowMs;
-            updateCachedStatus();
 
             // Log periodic status for debugging
-            Serial.print(F("[WiFi] DEBUG "));
-            Serial.printf("Periodic status check - Connected: %s, WiFi.status()=%d, RSSI=%ddBm\n",
+            LOGD("WiFi", "Periodic status check - Connected: %s, WiFi.status()=%d, RSSI=%ddBm",
                          isConnected() ? "Yes" : "No", WiFi.status(), getRSSI());
         }
     }
@@ -187,62 +134,16 @@ private:
             LOGI("WiFi", "Initializing connection to '%s'", cfg.ssid);
         }
 
-        if (!Logger::g_deviceId) {
-            Serial.printf("[WiFi] Config: reconnect_interval=%lums, status_check_interval=%lums\n",
-                         cfg.reconnectIntervalMs, cfg.statusCheckIntervalMs);
-        } else {
-            LOGD("WiFi", "Config: reconnect_interval=%lums, status_check_interval=%lums",
-                 cfg.reconnectIntervalMs, cfg.statusCheckIntervalMs);
-        }
-
-        WiFi.mode(WIFI_STA); // Explicitly set mode before begin
-        if (!Logger::g_deviceId) {
-            Serial.println(F("[WiFi] WiFi mode set to STA"));
-        } else {
-            Serial.print(F("[WiFi] DEBUG "));
-            Serial.println(F("WiFi mode set to STA"));
-        }
-
-        if (!Logger::g_deviceId) {
-            Serial.printf("[WiFi] Calling WiFi.begin() for SSID: %s\n", cfg.ssid);
-        } else {
-            Serial.print(F("[WiFi] DEBUG "));
-            Serial.printf("Calling WiFi.begin() for SSID: %s\n", cfg.ssid);
-        }
+        WiFi.mode(WIFI_STA);
+        WiFi.setAutoReconnect(true); // Ensure auto-reconnect is enabled
         WiFi.begin(cfg.ssid, cfg.password);
 
-        lastReconnectAttempt = millis();
-        currentReconnectBackoffMs = cfg.reconnectIntervalMs > 0 ? cfg.reconnectIntervalMs : 1000;
-        if (currentReconnectBackoffMs > kMaxReconnectBackoffMs) currentReconnectBackoffMs = kMaxReconnectBackoffMs;
-
-        if (!Logger::g_deviceId) {
-            Serial.printf("[WiFi] Initial backoff set to %lums (max: %lums)\n",
-                         currentReconnectBackoffMs, kMaxReconnectBackoffMs);
-        } else {
-            Serial.print(F("[WiFi] DEBUG "));
-            Serial.printf("Initial backoff set to %lums (max: %lums)\n",
-                         currentReconnectBackoffMs, kMaxReconnectBackoffMs);
-        }
-
         initialized = true;
-        if (!Logger::g_deviceId) {
-            Serial.println(F("[WiFi] WiFi manager initialized successfully"));
-        } else {
-            Serial.print(F("[WiFi] INFO "));
-            Serial.println(F("WiFi manager initialized successfully"));
-        }
+        LOGI("WiFi", "WiFi manager initialized successfully");
     }
 
 private:
     Config cfg;
-    uint32_t lastReconnectAttempt = 0;
     uint32_t lastStatusCheck = 0;
     bool initialized;
-    uint32_t currentReconnectBackoffMs = 0; // dynamic backoff interval (ms)
-    static constexpr uint32_t kMaxReconnectBackoffMs = 15000; // 15 seconds cap
-
-    void updateCachedStatus() {
-        // Cache expensive operations if needed
-        // For now, WiFi.status() is fast enough to call directly
-    }
 };

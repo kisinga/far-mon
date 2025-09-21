@@ -5,6 +5,7 @@
 #include "sensor_interface.hpp"
 #include "lib/core_logger.h"
 #include "lib/hal_lora.h"
+#include "lib/common_message_types.h"
 #include <vector>
 
 // ============================================================================
@@ -34,9 +35,21 @@ bool LoRaBatchTransmitter::transmitBatch(const std::vector<SensorReading>& readi
 
     if (payload.length() == 0) return false;
 
-    // Send as LoRa message (no ACK for telemetry)
-    return _loraHal->sendData(1, (const uint8_t*)payload.c_str(),
-                             (uint8_t)payload.length(), false);
+    // Create a telemetry message
+    Messaging::Message message(
+        Messaging::Message::Type::Telemetry,
+        _deviceId,  // source ID
+        1,          // destination ID (relay)
+        false,      // no ACK required for telemetry
+        (const uint8_t*)payload.c_str(),
+        (uint16_t)payload.length()
+    );
+
+    // Send as LoRa message using the proper message format
+    return _loraHal->sendData(message.getMetadata().destinationId,
+                             message.getPayload(),
+                             message.getLength(),
+                             message.getMetadata().requiresAck);
 }
 
 bool LoRaBatchTransmitter::isReady() const {
@@ -58,10 +71,84 @@ String LoRaBatchTransmitter::formatReadings(const std::vector<SensorReading>& re
 }
 
 // ============================================================================
-// SENSOR FACTORY (Placeholder - not used for now)
+// DEBUG SENSOR IMPLEMENTATIONS
+// ============================================================================
+
+class DebugTemperatureSensor : public ISensor {
+public:
+    DebugTemperatureSensor() {}
+
+    void begin() override {
+        // Initialize random seed for more realistic values
+        randomSeed(analogRead(0));
+    }
+
+    void read(std::vector<SensorReading>& readings) override {
+        // Generate a realistic temperature reading (15-35°C)
+        float temperature = 20.0f + random(-50, 50) / 10.0f;
+        readings.push_back({"temp", temperature, millis()});
+    }
+
+    const char* getName() const override {
+        return "DebugTemperature";
+    }
+};
+
+class DebugHumiditySensor : public ISensor {
+public:
+    DebugHumiditySensor() {}
+
+    void begin() override {
+        randomSeed(analogRead(0) + 1);
+    }
+
+    void read(std::vector<SensorReading>& readings) override {
+        // Generate a realistic humidity reading (40-80%)
+        float humidity = 60.0f + random(-200, 200) / 10.0f;
+        readings.push_back({"hum", humidity, millis()});
+    }
+
+    const char* getName() const override {
+        return "DebugHumidity";
+    }
+};
+
+class DebugBatterySensor : public ISensor {
+public:
+    DebugBatterySensor() {}
+
+    void begin() override {
+        randomSeed(analogRead(0) + 2);
+    }
+
+    void read(std::vector<SensorReading>& readings) override {
+        // Generate a battery voltage reading (3.0-4.2V)
+        float batteryVoltage = 3.7f + random(-7, 5) / 10.0f;
+        readings.push_back({"batt", batteryVoltage, millis()});
+    }
+
+    const char* getName() const override {
+        return "DebugBattery";
+    }
+};
+
+// ============================================================================
+// SENSOR FACTORY
 // ============================================================================
 
 namespace SensorFactory {
+    std::unique_ptr<ISensor> createDebugTemperatureSensor() {
+        return std::make_unique<DebugTemperatureSensor>();
+    }
+
+    std::unique_ptr<ISensor> createDebugHumiditySensor() {
+        return std::make_unique<DebugHumiditySensor>();
+    }
+
+    std::unique_ptr<ISensor> createDebugBatterySensor() {
+        return std::make_unique<DebugBatterySensor>();
+    }
+
     // In a real implementation, you would have factory functions here like:
     // std::unique_ptr<ISensor> createUltrasonicSensor(...);
 }

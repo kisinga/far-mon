@@ -13,6 +13,9 @@ void UiService::init() {
 }
 
 void UiService::tick() {
+    // Clear the display at the beginning of each tick
+    _displayHal.clear();
+
     switch (_state) {
         case UIState::Splash:
             drawSplashScreen(); // Redraw every tick
@@ -22,22 +25,18 @@ void UiService::tick() {
             break;
 
         case UIState::Home:
-            // Clear the display
-            _displayHal.clear();
-
             // The ScreenLayout needs to be initialized with elements.
             // This should happen in a setup method or be driven by app state.
             _screenLayout.draw();
-
-            // Display the buffer
-            _displayHal.display();
             break;
     }
+
+    // Display the buffer after all drawing is complete for the current state
+    _displayHal.display();
 }
 
 void UiService::drawSplashScreen() {
-    _displayHal.clear();
+    // The clear is now handled in tick()
     // TODO: Fix this. The HAL doesn't have a drawXbm method.
     _displayHal.drawXbm(32, 0, 64, 64, logo_bits);
-    _displayHal.display();
 }

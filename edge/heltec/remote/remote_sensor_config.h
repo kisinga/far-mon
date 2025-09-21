@@ -5,9 +5,22 @@
 
 #include <stdint.h>
 
-// Dummy struct for now
+// Remote Sensor Configuration
 struct RemoteSensorConfig {
-    bool enableSensorSystem = false;
+    bool enableSensorSystem = true; // Enable for debug sensors
+
+    // Debug sensors (enabled by default for testing)
+    struct {
+        bool enabled = true;
+    } temperatureConfig;
+    struct {
+        bool enabled = true;
+    } humidityConfig;
+    struct {
+        bool enabled = true;
+    } batteryConfig;
+
+    // Real sensors (disabled by default)
     struct {
         bool enabled = false;
     } ultrasonicConfig;
@@ -23,6 +36,7 @@ struct RemoteSensorConfig {
     struct {
         bool enabled = false;
     } tempHumidityConfig;
+
     struct {
         uint8_t ultrasonicTrig = 0;
         uint8_t ultrasonicEcho = 0;

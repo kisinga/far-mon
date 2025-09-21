@@ -2,6 +2,7 @@
 
 #include "ui_element.h"
 #include <Arduino.h>
+#include <limits>
 
 class HeaderStatusElement : public UIElement {
 public:
@@ -32,7 +33,7 @@ private:
 
     // State for all modes
     bool _loraConnected = false;
-    int16_t _loraRssi = -127;
+    int16_t _loraRssi = std::numeric_limits<int16_t>::min();
     bool _wifiConnected = false;
     int8_t _wifiSignalStrength = -1;
     uint16_t _peerCount = 0;

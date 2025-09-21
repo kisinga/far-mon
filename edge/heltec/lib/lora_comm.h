@@ -10,6 +10,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <limits>
 
 // Primary implementation uses Heltec LoRaWAN HAL
 // Requires Heltec ESP32 board support package that provides LoRaWan_APP.h
@@ -287,7 +288,13 @@ class LoRaComm {
     if (mode == Mode::Master) return true;
     return lastAckOkMs != 0 && ((int32_t)(lastNowMs - lastAckOkMs) < (int32_t)(LORA_COMM_MASTER_TTL_MS));
   }
-  int16_t getLastRssiDbm() const { return lastRssiDbm; }
+  int16_t getLastRssiDbm() const {
+    // Return invalid RSSI if no packets have been received yet
+    if (lastAckOkMs == 0) {
+      return INT16_MIN;  // Special value indicating no valid RSSI
+    }
+    return lastRssiDbm;
+  }
   size_t getPeerCount() const {
     size_t c = 0;
     for (size_t i = 0; i < LORA_COMM_MAX_PEERS; i++) if (peers[i].peerId != 0) c++;
@@ -742,7 +749,6 @@ void onAck(uint8_t src, uint16_t msgId) {
 }
 
 void setup() {
-  Serial.begin(115200);
   lora.begin(LoRaComm::Mode::Slave, 3);
   lora.setOnDataReceived(onData);
   lora.setOnAckReceived(onAck);

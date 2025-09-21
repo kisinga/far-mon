@@ -12,7 +12,7 @@ void CoreSystem::init(const DeviceConfig& config) {
 
     // 2. Initialize Serial
     Serial.begin(115200);
-    delay(200);
+    delay(500); // Longer delay to ensure serial is ready
     Serial.println();
 
     // 3. Initialize Logger
@@ -20,10 +20,17 @@ void CoreSystem::init(const DeviceConfig& config) {
     snprintf(deviceIdStr, sizeof(deviceIdStr), "%02X", config.deviceId);
     Logger::safeInitialize(deviceIdStr);
     Logger::setLevel(Logger::Level::Info);
+
+    // Ensure Serial is ready before logging (with timeout)
+    uint32_t startTime = millis();
+    while (!Serial && (millis() - startTime) < 2000) { // 2 second timeout
+        delay(10);
+    }
+
     Logger::printf(Logger::Level::Info, "SYS", "Core system initializing...");
 
     // 4. (Future) Initialize other core components here
     // For example, power management (vext), etc.
-    
+
     Logger::printf(Logger::Level::Info, "SYS", "Core system initialized.");
 }

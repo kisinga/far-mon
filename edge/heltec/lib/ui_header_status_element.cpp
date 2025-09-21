@@ -1,6 +1,7 @@
 #include "ui_header_status_element.h"
 #include "hal_display.h"
 #include <cmath> // For sqrtf
+#include <limits> // For std::numeric_limits
 
 HeaderStatusElement::HeaderStatusElement() {
 }
@@ -76,13 +77,15 @@ void HeaderStatusElement::drawLoraSignal(IDisplayHal& d, int16_t x, int16_t y, i
     const int8_t maxBarHeight = h - 2;
     const int16_t totalWidth = bars * barWidth + (bars - 1) * barGap;
     int16_t startX = x + (w - totalWidth); // Right-align in the column
-    
+
     uint8_t level = 0;
-    if (_loraConnected) {
+    if (_loraConnected && _loraRssi != std::numeric_limits<int16_t>::min()) {
         if (_loraRssi < -115) level = 1;
         else if (_loraRssi < -105) level = 2;
         else if (_loraRssi < -95) level = 3;
         else level = 4;
+    } else {
+        level = 0; // Explicitly set to 0 if not connected or RSSI is invalid
     }
 
     for (int i = 0; i < bars; i++) {
@@ -94,6 +97,11 @@ void HeaderStatusElement::drawLoraSignal(IDisplayHal& d, int16_t x, int16_t y, i
         } else {
             d.drawRect(barX, barY, barWidth, barH);
         }
+    }
+    // Draw an 'X' overlay if disconnected
+    if (level == 0) {
+        d.drawLine(startX, y, startX + totalWidth - 1, y + maxBarHeight - 1);
+        d.drawLine(startX, y + maxBarHeight - 1, startX + totalWidth - 1, y);
     }
 }
 
@@ -107,12 +115,16 @@ void HeaderStatusElement::drawWifiStatus(IDisplayHal& d, int16_t x, int16_t y, i
     int16_t startX = x + (w - totalWidth); // Right-align like LoRa icon
 
     uint8_t level = 0;
-    if (_wifiConnected) {
-        // Determine signal strength level (same as before)
-        if (_wifiSignalStrength <= 66) level = 2;
-        else level = 3;
+    if (_wifiConnected && _wifiSignalStrength >= 0) {
+        // Map signal strength percentage to 0-4 bars
+        if (_wifiSignalStrength > 75) level = 4;
+        else if (_wifiSignalStrength > 50) level = 3;
+        else if (_wifiSignalStrength > 25) level = 2;
+        else if (_wifiSignalStrength > 0) level = 1;
+        else level = 0; // Connected but 0% signal
+    } else {
+        level = 0; // Not connected or invalid signal strength
     }
-    // level = 0 means disconnected (no filled bars)
 
     // Draw signal bars (same style as LoRa icon)
     for (int i = 0; i < bars; i++) {
@@ -125,6 +137,11 @@ void HeaderStatusElement::drawWifiStatus(IDisplayHal& d, int16_t x, int16_t y, i
         } else {
             d.drawRect(barX, barY, barWidth, barH); // Empty bar outline
         }
+    }
+    // Draw an 'X' overlay if disconnected
+    if (level == 0) {
+        d.drawLine(startX, y, startX + totalWidth - 1, y + maxBarHeight - 1);
+        d.drawLine(startX, y + maxBarHeight - 1, startX + totalWidth - 1, y);
     }
 }
 

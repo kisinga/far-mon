@@ -62,11 +62,24 @@ private:
     std::shared_ptr<HeaderStatusElement> peerStatusElement;
     std::shared_ptr<HeaderStatusElement> wifiStatusElement;
 
+    // LoRa message handling
+    void onLoraDataReceived(uint8_t srcId, const uint8_t* payload, uint8_t length);
+    void onLoraAckReceived(uint8_t srcId, uint16_t messageId);
+
+    // Static callback functions for LoRa HAL
+    static void staticOnDataReceived(uint8_t srcId, const uint8_t* payload, uint8_t length);
+    static void staticOnAckReceived(uint8_t srcId, uint16_t messageId);
+
+    // Static instance pointer for callbacks
+    static RelayApplicationImpl* callbackInstance;
+
     void setupUi();
 };
 
-RelayApplicationImpl::RelayApplicationImpl() : 
+RelayApplicationImpl::RelayApplicationImpl() :
     config(buildRelayConfig()) {
+    // Set the static callback instance for LoRa HAL callbacks
+    callbackInstance = this;
 }
 
 void RelayApplicationImpl::initialize() {
@@ -76,27 +89,53 @@ void RelayApplicationImpl::initialize() {
     // Create self-contained HALs
     displayHal = std::make_unique<OledDisplayHal>();
     loraHal = std::make_unique<LoRaCommHal>();
-    wifiHal = std::make_unique<WifiManagerHal>(WifiManager::Config{
-        .ssid = config.communication.wifi.ssid,
-        .password = config.communication.wifi.password
-    });
     batteryHal = std::make_unique<BatteryMonitorHal>(config.battery);
 
     // Create services
     uiService = std::make_unique<UiService>(*displayHal);
     commsService = std::make_unique<CommsService>();
     commsService->setLoraHal(loraHal.get());
-    commsService->setWifiHal(wifiHal.get());
     batteryService = std::make_unique<BatteryService>(*batteryHal);
-    wifiService = std::make_unique<WifiService>(*wifiHal);
     loraService = std::make_unique<LoRaService>(*loraHal);
+
+    // Only create WiFi components if WiFi is enabled
+    if (config.communication.wifi.enableWifi) {
+        wifiHal = std::make_unique<WifiManagerHal>(WifiManager::Config{
+            .ssid = config.communication.wifi.ssid,
+            .password = config.communication.wifi.password
+        });
+        commsService->setWifiHal(wifiHal.get());
+        wifiService = std::make_unique<WifiService>(*wifiHal);
+    }
+
+    // Configure MQTT if enabled (only if WiFi is also enabled)
+    if (config.communication.mqtt.enableMqtt && config.communication.wifi.enableWifi && wifiHal) {
+        MqttPublisherConfig mqttConfig;
+        mqttConfig.enableMqtt = true;
+        mqttConfig.brokerHost = config.communication.mqtt.brokerHost;
+        mqttConfig.brokerPort = config.communication.mqtt.brokerPort;
+        mqttConfig.clientId = config.communication.mqtt.clientId;
+        mqttConfig.username = config.communication.mqtt.username;
+        mqttConfig.password = config.communication.mqtt.password;
+        mqttConfig.baseTopic = config.communication.mqtt.baseTopic;
+        mqttConfig.deviceTopic = config.communication.mqtt.deviceTopic;
+        mqttConfig.qos = config.communication.mqtt.qos;
+        mqttConfig.retain = config.communication.mqtt.retain;
+        wifiHal->setMqttConfig(mqttConfig);
+    }
     
     // Begin hardware
     displayHal->begin();
     loraHal->begin(ILoRaHal::Mode::Master, config.deviceId);
-    if (config.communication.wifi.enableWifi) {
+
+    // Only begin WiFi if enabled and WiFi HAL exists
+    if (config.communication.wifi.enableWifi && wifiHal) {
         wifiHal->begin();
     }
+
+    // Set up LoRa callbacks
+    loraHal->setOnDataReceived(&RelayApplicationImpl::staticOnDataReceived);
+    loraHal->setOnAckReceived(&RelayApplicationImpl::staticOnAckReceived);
 
     uiService->init(); // Show splash screen
     setupUi();
@@ -125,7 +164,7 @@ void RelayApplicationImpl::initialize() {
         }
     }, 50);
     
-    if (config.communication.wifi.enableWifi) {
+    if (config.communication.wifi.enableWifi && wifiService) {
         scheduler.registerTask("wifi", [this](CommonAppState& state){
             wifiService->update(state.nowMs);
             if (wifiStatusElement) {
@@ -157,12 +196,16 @@ void RelayApplicationImpl::setupUi() {
     // WiFi status in Status column
     wifiStatusElement = std::make_shared<HeaderStatusElement>();
     wifiStatusElement->setMode(HeaderStatusElement::Mode::Wifi);
+    // Initialize as disconnected until service updates
+    wifiStatusElement->setWifiStatus(false, -1);
     uiElements.push_back(wifiStatusElement);
     topBar.setColumn(TopBarColumn::Status, wifiStatusElement.get());
 
     // Peer count as centered icon in Network column (same position as LoRa icon on remote)
     peerStatusElement = std::make_shared<HeaderStatusElement>();
     peerStatusElement->setMode(HeaderStatusElement::Mode::PeerCount);
+    // Initialize with zero peers
+    peerStatusElement->setPeerCount(0);
     uiElements.push_back(peerStatusElement);
     topBar.setColumn(TopBarColumn::Network, peerStatusElement.get());
 
@@ -179,10 +222,52 @@ void RelayApplicationImpl::setupUi() {
     mainContent.setRight(statusTextElement.get());
 }
 
+void RelayApplicationImpl::onLoraDataReceived(uint8_t srcId, const uint8_t* payload, uint8_t length) {
+    // Process received LoRa data and forward to MQTT if WiFi is available
+    if (config.communication.wifi.enableWifi && wifiHal->isMqttReady()) {
+        // Format MQTT topic as "farm/telemetry/remote-{srcId}"
+        char topicSuffix[32];
+        snprintf(topicSuffix, sizeof(topicSuffix), "remote-%u", srcId);
+
+        // Forward the sensor data to MQTT
+        if (!wifiHal->publishMqtt(topicSuffix, payload, length)) {
+            LOGW("Relay", "Failed to forward sensor data from device %u to MQTT", srcId);
+        } else {
+            LOGI("Relay", "Forwarded %u bytes from device %u to MQTT", length, srcId);
+        }
+    }
+
+    // Update status text to show activity
+    if (statusTextElement) {
+        statusTextElement->setText(String("RX: ") + length + "b from " + srcId);
+    }
+}
+
+void RelayApplicationImpl::onLoraAckReceived(uint8_t srcId, uint16_t messageId) {
+    // Handle ACK received (for debugging)
+    LOGD("Relay", "ACK received from device %u for message %u", srcId, messageId);
+}
+
 void RelayApplicationImpl::run() {
     // The scheduler runs tasks in the background. We can just yield.
     vTaskDelay(pdMS_TO_TICKS(1000));
 }
+
+// Static callback functions for LoRa HAL
+void RelayApplicationImpl::staticOnDataReceived(uint8_t srcId, const uint8_t* payload, uint8_t length) {
+    if (callbackInstance) {
+        callbackInstance->onLoraDataReceived(srcId, payload, length);
+    }
+}
+
+void RelayApplicationImpl::staticOnAckReceived(uint8_t srcId, uint16_t messageId) {
+    if (callbackInstance) {
+        callbackInstance->onLoraAckReceived(srcId, messageId);
+    }
+}
+
+// Static instance pointer for callbacks
+RelayApplicationImpl* RelayApplicationImpl::callbackInstance = nullptr;
 
 // PIMPL Implementation
 RelayApplication::RelayApplication() : impl(new RelayApplicationImpl()) {}
