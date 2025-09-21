@@ -31,9 +31,11 @@ public:
     virtual bool isReady() const = 0;
 };
 
-// Manages a collection of sensors and coordinates data transmission
+// Manages a collection of sensors and triggers batch transmissions.
 class SensorManager {
 public:
+    SensorManager() : _transmitter(nullptr), _batchSize(1) {}
+
     void addSensor(std::unique_ptr<ISensor> sensor) {
         _sensors.push_back(std::move(sensor));
     }
@@ -42,30 +44,27 @@ public:
         _transmitter = transmitter;
     }
 
-    void update(uint32_t nowMs) {
-        std::vector<SensorReading> readings;
-        for (auto& sensor : _sensors) {
-            sensor->read(readings);
-        }
-
-        if (_transmitter && !_transmitter->isReady()) {
-            return;
-        }
-
-        // This is a simplified transmission trigger. A real implementation
-        // would have more sophisticated logic (e.g., configurable intervals).
-        if (_transmitter && nowMs - _lastTransmissionMs > 5000) {
-            _transmitter->transmitBatch(readings);
-            _lastTransmissionMs = nowMs;
-        }
+    void setBatchSize(size_t batchSize) {
+        _batchSize = batchSize;
     }
 
-    size_t getSensorCount() const {
-        return _sensors.size();
+    void update(uint32_t nowMs) {
+        // Read from all sensors
+        for (const auto& sensor : _sensors) {
+            sensor->read(_readings);
+        }
+
+        // Attempt to transmit if batch is ready
+        if (_transmitter && _readings.size() >= _batchSize) {
+            if (_transmitter->transmitBatch(_readings)) {
+                _readings.clear(); // Clear ONLY on successful queueing
+            }
+        }
     }
 
 private:
     std::vector<std::unique_ptr<ISensor>> _sensors;
-    SensorBatchTransmitter* _transmitter = nullptr;
-    uint32_t _lastTransmissionMs = 0;
+    SensorBatchTransmitter* _transmitter;
+    std::vector<SensorReading> _readings;
+    size_t _batchSize;
 };

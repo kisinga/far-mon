@@ -58,6 +58,7 @@ private:
 // Relay configuration - now just a thin wrapper
 struct RelayConfig : DeviceConfig {
     uint32_t peerMonitorIntervalMs = 2000;
+    uint32_t peerTimeoutMs = 120000; // 2 minutes
     uint8_t maxPeers = 16;
 
     RelayConfig() = default;
@@ -76,6 +77,7 @@ struct RemoteConfig : DeviceConfig {
     float analogReferenceVoltage = 3.30f;
     uint8_t masterNodeId = 1;
     bool useCalibratedAdc = true;  // Use analogReadMilliVolts() for better accuracy
+    uint32_t maxQuietTimeMs = 150000; // 2.5 minutes
 
     RemoteConfig() = default;
 

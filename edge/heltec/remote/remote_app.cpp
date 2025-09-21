@@ -67,14 +67,22 @@ private:
     std::shared_ptr<BatteryIconElement> batteryElement;
     std::shared_ptr<TextElement> statusTextElement;
 
+    uint32_t lastSuccessfulAckMs = 0;
+
+    void onLoraAckReceived(uint8_t srcId, uint16_t messageId);
+    static void staticOnAckReceived(uint8_t srcId, uint16_t messageId);
+    static RemoteApplicationImpl* callbackInstance;
 
     void setupUi();
     void setupSensors();
 };
 
+RemoteApplicationImpl* RemoteApplicationImpl::callbackInstance = nullptr;
+
 RemoteApplicationImpl::RemoteApplicationImpl() :
     config(buildRemoteConfig()),
     sensorConfig(buildRemoteSensorConfig()) {
+    callbackInstance = this;
 }
 
 void RemoteApplicationImpl::initialize() {
@@ -113,6 +121,10 @@ void RemoteApplicationImpl::initialize() {
 
     loraHal->begin(ILoRaHal::Mode::Slave, config.deviceId);
     LOGI("Remote", "LoRa initialized");
+    loraHal->setOnAckReceived(&RemoteApplicationImpl::staticOnAckReceived);
+    loraHal->setMasterNodeId(config.masterNodeId);
+    LOGI("Remote", "Sending registration frame...");
+    loraHal->sendData(config.masterNodeId, nullptr, 0, true);
 
     // Only begin WiFi if enabled
     if (config.communication.wifi.enableWifi && wifiHal) {
@@ -129,6 +141,12 @@ void RemoteApplicationImpl::initialize() {
     setupSensors();
     LOGI("Remote", "Sensors setup complete");
 
+    // Perform an initial sensor read and telemetry transmission
+    if (sensorConfig.enableSensorSystem) {
+        LOGI("Remote", "Performing initial sensor reading and telemetry transmission...");
+        sensorManager.update(millis());
+    }
+
     LOGI("Remote", "Registering scheduler tasks");
     scheduler.registerTask("heartbeat", [this](CommonAppState& state){
         state.heartbeatOn = !state.heartbeatOn;
@@ -143,13 +161,30 @@ void RemoteApplicationImpl::initialize() {
         loraService->update(state.nowMs);
         Radio.IrqProcess(); // Handle radio interrupts
         // Update UI elements with new state
-        loraStatusElement->setLoraStatus(loraService->isConnected(), loraService->getLastRssiDbm());
+        auto connectionState = loraService->getConnectionState();
+        bool isConnected = (connectionState == ILoRaService::ConnectionState::Connected);
+        loraStatusElement->setLoraStatus(isConnected, loraService->getLastRssiDbm());
         batteryElement->setStatus(batteryService->getBatteryPercent(), batteryService->isCharging());
     }, 50);
     if (sensorConfig.enableSensorSystem) {
         scheduler.registerTask("sensors", [this](CommonAppState& state){
             sensorManager.update(state.nowMs);
-        }, 5000); // Update sensors every 5 seconds
+        }, config.telemetryReportIntervalMs);
+    }
+    scheduler.registerTask("lora_watchdog", [this](CommonAppState& state){
+        if (state.nowMs - lastSuccessfulAckMs > config.maxQuietTimeMs) {
+            LOGW("Remote", "Watchdog: No ACK received recently, forcing reconnect.");
+            loraService->forceReconnect();
+            // Reset the timer to prevent spamming keep-alives before the first one gets a chance to be ACKed
+            lastSuccessfulAckMs = state.nowMs;
+        }
+    }, 30000); // Check every 30 seconds
+
+
+    if (config.communication.wifi.enableWifi && wifiService) {
+        scheduler.registerTask("wifi", [this](CommonAppState& state){
+            wifiService->update(state.nowMs);
+        }, config.communication.wifi.statusCheckIntervalMs);
     }
 
     LOGI("Remote", "Starting scheduler");
@@ -219,6 +254,17 @@ void RemoteApplicationImpl::setupSensors() {
 
 void RemoteApplicationImpl::run() {
     delay(1000);
+}
+
+void RemoteApplicationImpl::onLoraAckReceived(uint8_t srcId, uint16_t messageId) {
+    LOGD("Remote", "ACK received from %u for msgId %u", srcId, messageId);
+    lastSuccessfulAckMs = millis();
+}
+
+void RemoteApplicationImpl::staticOnAckReceived(uint8_t srcId, uint16_t messageId) {
+    if (callbackInstance) {
+        callbackInstance->onLoraAckReceived(srcId, messageId);
+    }
 }
 
 // PIMPL Implementation

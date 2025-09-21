@@ -79,24 +79,6 @@
 #define LORA_COMM_MAX_RETRIES 4
 #endif
 
-#ifndef LORA_COMM_SLAVE_PING_INTERVAL_MS
-#define LORA_COMM_SLAVE_PING_INTERVAL_MS 5000
-#endif
-
-#ifndef LORA_COMM_MASTER_TTL_MS
-#define LORA_COMM_MASTER_TTL_MS 15000
-#endif
-
-// Optional jittered ping window for slaves. If defined, ping cadence is randomized
-// between MIN and MAX inclusive. Presence is also piggybacked on DATA uplinks.
-#ifndef LORA_COMM_SLAVE_PING_MIN_MS
-#define LORA_COMM_SLAVE_PING_MIN_MS 5000
-#endif
-
-#ifndef LORA_COMM_SLAVE_PING_MAX_MS
-#define LORA_COMM_SLAVE_PING_MAX_MS 10000
-#endif
-
 #ifndef LORA_COMM_TX_GUARD_MS
 #define LORA_COMM_TX_GUARD_MS 8000  // Faster recovery if TX completion IRQ is missed
 #endif
@@ -105,12 +87,23 @@
 #define LORA_COMM_TX_STUCK_REINIT_COUNT 3  // Reinitialize sooner to recover radio
 #endif
 
+#ifndef LORA_COMM_CONNECTION_CHECK_MS
+#define LORA_COMM_CONNECTION_CHECK_MS 10000  // Check connection every 10 seconds
+#endif
+
+#ifndef LORA_COMM_RECONNECT_ATTEMPT_MS
+#define LORA_COMM_RECONNECT_ATTEMPT_MS 5000  // Attempt reconnection every 5 seconds when disconnected
+#endif
+
 class LoRaComm {
- public:
+  public:
   enum class Mode : uint8_t { Master = 0, Slave = 1 };
 
   // Frame types for the internal protocol
-  enum class FrameType : uint8_t { Data = 0x01, Ack = 0x02, Ping = 0x03 };
+  enum class FrameType : uint8_t { Data = 0x01, Ack = 0x02 };
+
+  // Connection states for better reconnection handling
+  enum class ConnectionState : uint8_t { Disconnected = 0, Connecting = 1, Connected = 2 };
 
   // Callback when DATA is received
   using OnDataReceived = void (*)(uint8_t srcId, const uint8_t *payload, uint8_t length);
@@ -127,11 +120,13 @@ class LoRaComm {
 
   LoRaComm()
       : mode(Mode::Slave), selfId(0), onDataCb(nullptr), onAckCb(nullptr),
-        lastPingSentMs(0), lastAckOkMs(0), lastRadioActivityMs(0), lastNowMs(0),
+        lastAckOkMs(0), lastRadioActivityMs(0), lastNowMs(0),
         lastRssiDbm(0),
         rxPendingAck(false), rxAckTargetId(0), rxAckMessageId(0),
         outboxCount(0), nextMessageId(1), awaitingAckMsgId(0), awaitingAckSrcId(0),
-        radioState(State::Idle), autoPingEnabled(true), stallActive(false), initialized(false) {
+        radioState(State::Idle), stallActive(false), initialized(false),
+        lastConnectionCheckMs(0), nextReconnectAttemptMs(0), masterNodeId(1),
+        connectionState(ConnectionState::Disconnected) {
     memset(peers, 0, sizeof(peers));
     lastAckOkMs = 0;
     lastRssiDbm = std::numeric_limits<int16_t>::min();
@@ -157,7 +152,11 @@ class LoRaComm {
   void setOnAckReceived(OnAckReceived cb) { onAckCb = cb; }
   void setVerbose(bool verbose) { verboseEnabled = verbose; }
   void setLogLevel(uint8_t level /*Logger::Level*/) { logLevel = level; }
-  void setAutoPingEnabled(bool enabled) { autoPingEnabled = enabled; }
+  void setPeerTimeout(uint32_t timeoutMs) { peerTimeoutMs = timeoutMs; }
+  void setMasterNodeId(uint8_t masterId) { masterNodeId = masterId; }
+
+  ConnectionState getConnectionState() const { return connectionState; }
+
   bool sendData(uint8_t destId, const uint8_t *payload, uint8_t length, bool requireAck = true) {
     if (length > maxAppPayload()) return false;
     // Reserve one slot for housekeeping (e.g., PING) to preserve presence
@@ -179,6 +178,10 @@ class LoRaComm {
   void tick(uint32_t nowMs) {
     lastNowMs = nowMs;
     // Radio.IrqProcess(); // This should be called from the main application loop/task
+
+    // Connection state management
+    updateConnectionState(nowMs);
+
     // TX watchdog: recover if TX completion IRQ is missed
     if (radioState == State::Tx) {
       if ((int32_t)(nowMs - lastRadioActivityMs) > (int32_t)LORA_COMM_TX_GUARD_MS) {
@@ -197,7 +200,7 @@ class LoRaComm {
               if (m.requireAck) {
                 m.nextAttemptMs = nowMs + LORA_COMM_ACK_TIMEOUT_MS;
               } else {
-                // Non-ACK (e.g., PING): drop to prevent log spam and backlog
+                // Non-ACK: drop to prevent log spam and backlog
                 m.inUse = false;
                 statsDropped++;
                 Logger::printf(Logger::Level::Warn, "lora", "drop (stuck) msgId=%u", m.msgId);
@@ -213,24 +216,11 @@ class LoRaComm {
         enterRxMode();
       }
     }
-    // Automatic slave ping (jittered and infrequent)
-    if (mode == Mode::Slave && autoPingEnabled) {
-      if ((int32_t)(nowMs - lastPingSentMs) >= 0) {
-        const bool enqOk = sendPing();
-        if (enqOk) {
-          const uint32_t window = (uint32_t)random((long)LORA_COMM_SLAVE_PING_MIN_MS, (long)LORA_COMM_SLAVE_PING_MAX_MS + 1);
-          lastPingSentMs = nowMs + window;
-        } else {
-          // Outbox full: retry ping soon to restore presence quickly once space frees up
-          lastPingSentMs = nowMs + 1000; // 1s backoff
-          Logger::printf(Logger::Level::Warn, "lora", "PING skipped (outbox=%u)", outboxCount);
-        }
-      }
-    } else {
-      // Update master peer TTLs
+    // Update master peer TTLs
+    if (mode == Mode::Master) {
       for (size_t i = 0; i < LORA_COMM_MAX_PEERS; i++) {
         if (peers[i].peerId != 0) {
-          bool alive = ((int32_t)(nowMs - peers[i].lastSeenMs) < (int32_t)LORA_COMM_MASTER_TTL_MS);
+          bool alive = ((int32_t)(nowMs - peers[i].lastSeenMs) < (int32_t)peerTimeoutMs);
           peers[i].connected = alive;
         }
       }
@@ -259,8 +249,8 @@ class LoRaComm {
         }
         statsTx++;
         if (outboxCount > statsOutboxMax) statsOutboxMax = outboxCount;
-        Logger::printf(Logger::Level::Debug, "lora", "TX %s to=%u msgId=%u%s",
-                       (m.type == FrameType::Data ? "DATA" : "PING"), m.destId, m.msgId,
+        Logger::printf(Logger::Level::Debug, "lora", "TX DATA to=%u msgId=%u%s",
+                       m.destId, m.msgId,
                        (m.requireAck ? " waitAck" : ""));
         currentTxMsgId = m.msgId;
         sendFrame(m.buf, m.length);
@@ -280,15 +270,15 @@ class LoRaComm {
     compactOutbox();
     // Low-noise periodic stats (Verbose): every 5s
     LOG_EVERY_MS(5000, {
-      Logger::printf(Logger::Level::Verbose, "lora", "stats tx=%u rx_data=%u rx_ack=%u rx_ping=%u drop=%u obx_max=%u", (unsigned)statsTx, (unsigned)statsRxData, (unsigned)statsRxAck, (unsigned)statsRxPing, (unsigned)statsDropped, (unsigned)statsOutboxMax);
-      statsTx = statsRxData = statsRxAck = statsRxPing = statsDropped = 0;
+      Logger::printf(Logger::Level::Verbose, "lora", "stats tx=%u rx_data=%u rx_ack=%u drop=%u obx_max=%u", (unsigned)statsTx, (unsigned)statsRxData, (unsigned)statsRxAck, (unsigned)statsDropped, (unsigned)statsOutboxMax);
+      statsTx = statsRxData = statsRxAck = statsDropped = 0;
       statsOutboxMax = outboxCount;
     });
   }
 
   bool isConnected() const {
-    if (mode == Mode::Master) return true;
-    return lastAckOkMs != 0 && ((int32_t)(lastNowMs - lastAckOkMs) < (int32_t)(LORA_COMM_MASTER_TTL_MS));
+    if (mode == Mode::Master) return connectionState == ConnectionState::Connected;
+    return connectionState == ConnectionState::Connected;
   }
   int16_t getLastRssiDbm() const {
     // Return invalid RSSI if no packets have been received yet
@@ -298,6 +288,14 @@ class LoRaComm {
     return lastRssiDbm;
   }
   size_t getPeerCount() const {
+    // Only count active/connected peers (this is what users expect to see)
+    size_t c = 0;
+    for (size_t i = 0; i < LORA_COMM_MAX_PEERS; i++) if (peers[i].peerId != 0 && peers[i].connected) c++;
+    return c;
+  }
+
+  size_t getTotalPeerCount() const {
+    // Return total number of peers (active + inactive) - for debugging/internal use
     size_t c = 0;
     for (size_t i = 0; i < LORA_COMM_MAX_PEERS; i++) if (peers[i].peerId != 0) c++;
     return c;
@@ -311,6 +309,47 @@ class LoRaComm {
       }
     }
     return false;
+  }
+
+  void forceReconnect() {
+    connectionState = ConnectionState::Connecting;
+    nextReconnectAttemptMs = millis() + LORA_COMM_RECONNECT_ATTEMPT_MS;
+  }
+
+  void updateConnectionState(uint32_t nowMs) {
+    // Connection state management for both Master and Slave
+    if (mode == Mode::Master) {
+      // Master is connected if it has at least one active peer
+      bool hasActivePeers = false;
+      for (size_t i = 0; i < LORA_COMM_MAX_PEERS; i++) {
+        if (peers[i].peerId != 0 && peers[i].connected) {
+          hasActivePeers = true;
+          break;
+        }
+      }
+      connectionState = hasActivePeers ? ConnectionState::Connected : ConnectionState::Disconnected;
+    } else {
+      // Slave connection logic
+      if (lastAckOkMs != 0 && ((int32_t)(nowMs - lastAckOkMs) < (int32_t)peerTimeoutMs)) {
+        connectionState = ConnectionState::Connected;
+      } else if (connectionState == ConnectionState::Connected) {
+        // Transition from connected to disconnected
+        connectionState = ConnectionState::Disconnected;
+        nextReconnectAttemptMs = nowMs + LORA_COMM_RECONNECT_ATTEMPT_MS;
+        Logger::printf(Logger::Level::Info, "lora", "Connection lost, will attempt reconnect");
+      }
+
+      // Attempt reconnection if disconnected
+      if (connectionState == ConnectionState::Disconnected &&
+          nowMs >= nextReconnectAttemptMs) {
+        connectionState = ConnectionState::Connecting;
+        // Send a registration frame to master
+        if (sendData(masterNodeId, nullptr, 0, true)) {
+          Logger::printf(Logger::Level::Info, "lora", "Sent reconnection frame to master %u", masterNodeId);
+        }
+        nextReconnectAttemptMs = nowMs + LORA_COMM_RECONNECT_ATTEMPT_MS;
+      }
+    }
   }
 
 private:
@@ -340,37 +379,6 @@ private:
 
     initialized = true;
   }
-
-  // For slaves: opportunistic ping. Master will track presence via received pings.
-  bool sendPing() {
-    if (outboxCount >= LORA_COMM_MAX_OUTBOX) {
-      // Try to free a slot by dropping a best-effort (non-ACK) message
-      for (size_t i = 0; i < outboxCount; i++) {
-        OutMsg &old = outbox[i];
-        if (old.inUse && !old.requireAck) {
-          old.inUse = false;
-          statsDropped++;
-          Logger::printf(Logger::Level::Warn, "lora", "drop (preempt) msgId=%u for PING", old.msgId);
-          compactOutbox();
-          break;
-        }
-      }
-      if (outboxCount >= LORA_COMM_MAX_OUTBOX) return false;
-    }
-    OutMsg &m = outbox[outboxCount++];
-    m.inUse = true;
-    m.type = FrameType::Ping;
-    m.destId = 0xFF; // broadcast or unknown; app may filter by srcId
-    m.msgId = allocateMsgId();
-    m.requireAck = false; // Pings are not acked; presence tracked by master
-    m.attempts = 0;
-    m.nextAttemptMs = 0;
-    m.length = buildFrame(m.buf, FrameType::Ping, selfId, m.destId, m.msgId, nullptr, 0, /*flags=*/0);
-    Logger::printf(Logger::Level::Debug, "lora", "ENQ PING msgId=%u obx=%u", m.msgId, outboxCount);
-    return true;
-  }
-
-
 
  private:
   // Internal state
@@ -403,15 +411,21 @@ private:
   uint8_t selfId;
   OnDataReceived onDataCb;
   OnAckReceived onAckCb;
-  uint32_t lastPingSentMs;
   uint32_t lastAckOkMs;
   uint32_t lastRadioActivityMs;
   uint32_t lastNowMs;
   int16_t lastRssiDbm;
+  uint32_t peerTimeoutMs = 15000; // Default, can be overridden
 
   volatile bool rxPendingAck;
   volatile uint8_t rxAckTargetId;
   volatile uint16_t rxAckMessageId;
+
+  // Connection management
+  uint32_t lastConnectionCheckMs;
+  uint32_t nextReconnectAttemptMs;
+  uint8_t masterNodeId;
+  ConnectionState connectionState;
 
   OutMsg outbox[LORA_COMM_MAX_OUTBOX];
   uint8_t outboxCount;
@@ -425,7 +439,6 @@ private:
 
   RadioEvents_t radioEvents;
   State radioState;
-  bool autoPingEnabled;
   bool initialized;
 
   bool verboseEnabled = false;
@@ -434,7 +447,6 @@ private:
 
   // Aggregated stats for low-noise periodic reporting
   uint16_t statsRxData = 0;
-  uint16_t statsRxPing = 0;
   uint16_t statsRxAck = 0;
   uint16_t statsTx = 0;
   uint16_t statsTxTimeouts = 0;
@@ -552,6 +564,15 @@ private:
         Logger::printf(Logger::Level::Debug, "lora", "RX ACK from=%u msgId=%u", src, msgId);
         if (mode == Mode::Slave) {
           lastAckOkMs = millis();
+          // Update connection state when we receive ACKs
+          if (connectionState != ConnectionState::Connected) {
+            connectionState = ConnectionState::Connected;
+            Logger::printf(Logger::Level::Info, "lora", "Connection established with master %u", src);
+          }
+        } else if (mode == Mode::Master) {
+          // Master should also update connection state when receiving ACKs
+          // This indicates active communication from peers
+          notePeerSeen(src, millis());
         }
         // Remove matching outbox entry
         removeOutboxByMsgId(msgId);
@@ -569,13 +590,6 @@ private:
         if (onDataCb != nullptr && appLen > 0) {
           onDataCb(src, payload + kHeaderSize, appLen);
         }
-        break;
-      }
-      case FrameType::Ping: {
-        // Presence only; master marks peer seen in notePeerSeen above
-        // Do not ACK pings to conserve airtime
-        statsRxPing++;
-        Logger::printf(Logger::Level::Debug, "lora", "RX PING from=%u", src);
         break;
       }
       default:
@@ -645,7 +659,7 @@ private:
       }
     }
     if (bestIdx >= 0) return bestIdx;
-    // 2) Then send never-attempted messages (including PING)
+    // 2) Then send never-attempted messages
     for (int i = 0; i < (int)outboxCount; i++) {
       OutMsg &m = outbox[i];
       if (!m.inUse) continue;

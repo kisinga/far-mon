@@ -84,6 +84,7 @@ void RelayApplicationImpl::initialize() {
     // Create self-contained HALs
     displayHal = std::make_unique<OledDisplayHal>();
     loraHal = std::make_unique<LoRaCommHal>();
+    loraHal->setPeerTimeout(config.peerTimeoutMs);
     batteryHal = std::make_unique<BatteryMonitorHal>(config.battery);
 
     // Create services
@@ -155,9 +156,22 @@ void RelayApplicationImpl::initialize() {
         loraService->update(state.nowMs);
         Radio.IrqProcess(); // Handle radio interrupts
         if (peerStatusElement) {
-            peerStatusElement->setPeerCount(loraService->getPeerCount());
+            auto connectionState = loraService->getConnectionState();
+            bool hasActivePeers = (connectionState == ILoRaService::ConnectionState::Connected);
+            // Show peer count if connected, otherwise show 0
+            peerStatusElement->setPeerCount(hasActivePeers ? loraService->getPeerCount() : 0);
         }
     }, 50);
+
+    // Add connection monitoring task for master to handle peer reconnections
+    scheduler.registerTask("lora_connection_monitor", [this](CommonAppState& state){
+        auto connectionState = loraService->getConnectionState();
+        if (connectionState == ILoRaService::ConnectionState::Disconnected) {
+            // If master is disconnected, try to force reconnect
+            LOGW("Relay", "No active peers detected, attempting to reconnect...");
+            loraService->forceReconnect();
+        }
+    }, 10000); // Check every 10 seconds
     
     if (config.communication.wifi.enableWifi && wifiService) {
         scheduler.registerTask("wifi", [this](CommonAppState& state){

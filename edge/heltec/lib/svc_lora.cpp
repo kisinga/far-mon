@@ -21,3 +21,20 @@ void LoRaService::sendData(uint8_t dest, const uint8_t* payload, uint8_t len, bo
 size_t LoRaService::getPeerCount() const {
     return loraHal.getPeerCount();
 }
+
+size_t LoRaService::getTotalPeerCount() const {
+    return loraHal.getTotalPeerCount();
+}
+
+// Connection state management
+ILoRaHal::ConnectionState LoRaService::getConnectionState() const {
+    return loraHal.getConnectionState();
+}
+
+void LoRaService::setMasterNodeId(uint8_t masterId) {
+    loraHal.setMasterNodeId(masterId);
+}
+
+void LoRaService::forceReconnect() {
+    loraHal.forceReconnect();
+}

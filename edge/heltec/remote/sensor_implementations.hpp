@@ -40,7 +40,7 @@ bool LoRaBatchTransmitter::transmitBatch(const std::vector<SensorReading>& readi
         Messaging::Message::Type::Telemetry,
         _deviceId,  // source ID
         1,          // destination ID (relay)
-        false,      // no ACK required for telemetry
+        true,       // ACK required for telemetry
         (const uint8_t*)payload.c_str(),
         (uint16_t)payload.length()
     );
@@ -53,7 +53,7 @@ bool LoRaBatchTransmitter::transmitBatch(const std::vector<SensorReading>& readi
 }
 
 bool LoRaBatchTransmitter::isReady() const {
-    return _loraHal && _loraHal->isConnected();
+    return _loraHal != nullptr;
 }
 
 String LoRaBatchTransmitter::formatReadings(const std::vector<SensorReading>& readings) {

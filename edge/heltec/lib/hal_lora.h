@@ -19,10 +19,18 @@ public:
     
     virtual void setOnDataReceived(OnDataReceived cb) = 0;
     virtual void setOnAckReceived(OnAckReceived cb) = 0;
+    virtual void setPeerTimeout(uint32_t timeoutMs) = 0;
 
     virtual bool isConnected() const = 0;
     virtual int16_t getLastRssiDbm() const = 0;
     virtual size_t getPeerCount() const = 0;
+    virtual size_t getTotalPeerCount() const = 0;
+
+    // Connection state management
+    virtual void setMasterNodeId(uint8_t masterId) = 0;
+    virtual void forceReconnect() = 0;
+    using ConnectionState = LoRaComm::ConnectionState;
+    virtual ConnectionState getConnectionState() const = 0;
 };
 
 class LoRaCommHal : public ILoRaHal {
@@ -33,9 +41,16 @@ public:
     bool sendData(uint8_t targetId, const uint8_t* data, uint8_t len, bool ack) override;
     void setOnDataReceived(OnDataReceived cb) override;
     void setOnAckReceived(OnAckReceived cb) override;
+    void setPeerTimeout(uint32_t timeoutMs) override;
     bool isConnected() const override;
     int16_t getLastRssiDbm() const override;
     size_t getPeerCount() const override;
+    size_t getTotalPeerCount() const override;
+
+    // Connection state management
+    void setMasterNodeId(uint8_t masterId) override;
+    void forceReconnect() override;
+    ConnectionState getConnectionState() const override;
 
 private:
     LoRaComm _lora;
@@ -64,6 +79,10 @@ void LoRaCommHal::setOnAckReceived(OnAckReceived cb) {
     _lora.setOnAckReceived(cb);
 }
 
+void LoRaCommHal::setPeerTimeout(uint32_t timeoutMs) {
+    _lora.setPeerTimeout(timeoutMs);
+}
+
 bool LoRaCommHal::isConnected() const {
     return _lora.isConnected();
 }
@@ -74,4 +93,21 @@ int16_t LoRaCommHal::getLastRssiDbm() const {
 
 size_t LoRaCommHal::getPeerCount() const {
     return _lora.getPeerCount();
+}
+
+size_t LoRaCommHal::getTotalPeerCount() const {
+    return _lora.getTotalPeerCount();
+}
+
+// Connection state management
+void LoRaCommHal::setMasterNodeId(uint8_t masterId) {
+    _lora.setMasterNodeId(masterId);
+}
+
+void LoRaCommHal::forceReconnect() {
+    _lora.forceReconnect();
+}
+
+LoRaCommHal::ConnectionState LoRaCommHal::getConnectionState() const {
+    return _lora.getConnectionState();
 }
