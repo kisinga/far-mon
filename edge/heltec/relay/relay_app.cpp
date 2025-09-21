@@ -174,10 +174,10 @@ void RelayApplicationImpl::initialize() {
                 bool connected = wifiService->isMqttConnected();
                 if (connected) {
                     // UTF-8 checkmark
-                    mqttStatusText->setText("MQTT \xE2\x9C\x93");
+                    mqttStatusText->setText("MQTT OK");
                 } else {
                     // UTF-8 ballot X
-                    mqttStatusText->setText("MQTT \xE2\x9C\x97");
+                    mqttStatusText->setText("MQTT X");
                 }
             }
         }, config.communication.wifi.statusCheckIntervalMs);
