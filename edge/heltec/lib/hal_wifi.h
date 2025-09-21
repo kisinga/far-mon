@@ -22,6 +22,12 @@ public:
     virtual bool publishMqtt(const char* topicSuffix, const uint8_t* payload, uint8_t length) = 0;
     virtual bool isMqttReady() const = 0;
     virtual bool isMqttConnected() const = 0;
+    
+    // Enhanced MQTT monitoring
+    virtual uint32_t getRetryAttempts() const = 0;
+    virtual uint16_t getQueuedMessageCount() const = 0;
+    virtual uint32_t getSuccessfulPublishes() const = 0;
+    virtual uint32_t getFailedPublishes() const = 0;
 };
 
 class WifiManagerHal : public IWifiHal {
@@ -39,6 +45,12 @@ public:
     bool publishMqtt(const char* topicSuffix, const uint8_t* payload, uint8_t length) override;
     bool isMqttReady() const override;
     bool isMqttConnected() const override;
+    
+    // Enhanced MQTT monitoring
+    uint32_t getRetryAttempts() const override;
+    uint16_t getQueuedMessageCount() const override;
+    uint32_t getSuccessfulPublishes() const override;
+    uint32_t getFailedPublishes() const override;
 
 private:
     WifiManager _wifiManager;
@@ -77,6 +89,9 @@ bool WifiManagerHal::uplink(const uint8_t* payload, uint8_t length) {
 // MQTT support
 void WifiManagerHal::setMqttConfig(const MqttPublisherConfig& config) {
     _mqttPublisher = std::make_unique<MqttPublisher>(config);
+    if (_mqttPublisher) {
+        _mqttPublisher->begin();
+    }
 }
 
 bool WifiManagerHal::publishMqtt(const char* topicSuffix, const uint8_t* payload, uint8_t length) {
@@ -92,4 +107,21 @@ bool WifiManagerHal::isMqttReady() const {
 
 bool WifiManagerHal::isMqttConnected() const {
     return _mqttPublisher && _mqttPublisher->isConnected();
+}
+
+// Enhanced MQTT monitoring
+uint32_t WifiManagerHal::getRetryAttempts() const {
+    return _mqttPublisher ? _mqttPublisher->getRetryAttempts() : 0;
+}
+
+uint16_t WifiManagerHal::getQueuedMessageCount() const {
+    return _mqttPublisher ? _mqttPublisher->getQueuedMessageCount() : 0;
+}
+
+uint32_t WifiManagerHal::getSuccessfulPublishes() const {
+    return _mqttPublisher ? _mqttPublisher->getSuccessfulPublishes() : 0;
+}
+
+uint32_t WifiManagerHal::getFailedPublishes() const {
+    return _mqttPublisher ? _mqttPublisher->getFailedPublishes() : 0;
 }

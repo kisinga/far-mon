@@ -55,8 +55,12 @@
 #define LORA_COMM_SYMBOL_TIMEOUT 0
 #endif
 
-#ifndef LORA_COMM_IQ_INVERT
-#define LORA_COMM_IQ_INVERT false
+#ifndef LORA_COMM_TX_IQ_INVERT
+#define LORA_COMM_TX_IQ_INVERT false
+#endif
+
+#ifndef LORA_COMM_RX_IQ_INVERT
+#define LORA_COMM_RX_IQ_INVERT false
 #endif
 
 #ifndef LORA_COMM_MAX_PAYLOAD
@@ -109,7 +113,10 @@ class LoRaComm {
   using OnDataReceived = void (*)(uint8_t srcId, const uint8_t *payload, uint8_t length);
 
   // Callback when an ACK for our outgoing message is received
-  using OnAckReceived = void (*)(uint8_t srcId, uint16_t messageId);
+  using OnAckReceived = void (*)(uint8_t srcId, uint16_t messageId, uint8_t attempts);
+
+  // Callback when a message is dropped after all retries
+  using OnMessageDropped = void (*)(uint16_t messageId, uint8_t attempts);
 
   // Peer info for master view
   struct PeerInfo {
@@ -119,10 +126,9 @@ class LoRaComm {
   };
 
   LoRaComm()
-      : mode(Mode::Slave), selfId(0), onDataCb(nullptr), onAckCb(nullptr),
+      : mode(Mode::Slave), selfId(0), onDataCb(nullptr), onAckCb(nullptr), onMsgDroppedCb(nullptr),
         lastAckOkMs(0), lastRadioActivityMs(0), lastNowMs(0),
         lastRssiDbm(0),
-        rxPendingAck(false), rxAckTargetId(0), rxAckMessageId(0),
         outboxCount(0), nextMessageId(1), awaitingAckMsgId(0), awaitingAckSrcId(0),
         radioState(State::Idle), stallActive(false), initialized(false),
         lastConnectionCheckMs(0), nextReconnectAttemptMs(0), masterNodeId(1),
@@ -150,6 +156,7 @@ class LoRaComm {
   // Expose selected APIs used by services/transports
   void setOnDataReceived(OnDataReceived cb) { onDataCb = cb; }
   void setOnAckReceived(OnAckReceived cb) { onAckCb = cb; }
+  void setOnMessageDropped(OnMessageDropped cb) { onMsgDroppedCb = cb; }
   void setVerbose(bool verbose) { verboseEnabled = verbose; }
   void setLogLevel(uint8_t level /*Logger::Level*/) { logLevel = level; }
   void setPeerTimeout(uint32_t timeoutMs) { peerTimeoutMs = timeoutMs; }
@@ -205,7 +212,7 @@ class LoRaComm {
               break;
             }
           }
-          compactOutbox();
+          compactOutbox(nowMs);
           currentTxMsgId = 0;
         }
         Radio.Sleep();
@@ -235,16 +242,26 @@ class LoRaComm {
     updateConnectionState(nowMs);
 
     // Priority 1: send pending ACK as soon as radio is idle
-    if (rxPendingAck && radioState != State::Tx) {
-      uint8_t frame[8];
-      uint8_t len = buildFrame(frame, FrameType::Ack, selfId, rxAckTargetId, rxAckMessageId, nullptr, 0, /*flags=*/0);
-      if (Logger::isEnabled(verboseEnabled ? Logger::Level::Verbose : (Logger::Level)logLevel)) {
-        Logger::printf(Logger::Level::Debug, "lora", "TX ACK to=%u msgId=%u (responding to DATA)%s",
-                       rxAckTargetId, rxAckMessageId,
-                       (connectionState == ConnectionState::Connected ? " (connected)" : ""));
+    if (pendingAckCount > 0 && radioState != State::Tx) {
+      noInterrupts();
+      PendingAck ackToSend;
+      ackToSend.targetId = pendingAcks[0].targetId;
+      ackToSend.messageId = pendingAcks[0].messageId;
+
+      // Shift remaining ACKs down
+      for (uint8_t i = 0; i < pendingAckCount - 1; i++) {
+        pendingAcks[i].targetId = pendingAcks[i + 1].targetId;
+        pendingAcks[i].messageId = pendingAcks[i + 1].messageId;
       }
+      pendingAckCount--;
+      interrupts();
+
+      uint8_t frame[8];
+      uint8_t len = buildFrame(frame, FrameType::Ack, selfId, ackToSend.targetId, ackToSend.messageId, nullptr, 0, /*flags=*/0);
+      Logger::printf(Logger::Level::Info, "lora", "TX ACK to=%u msgId=%u (responding to DATA)%s",
+                     ackToSend.targetId, ackToSend.messageId,
+                     (connectionState == ConnectionState::Connected ? " (connected)" : ""));
       sendFrame(frame, len);
-      rxPendingAck = false;
       return; // wait for TX done
     }
     // Priority 2: transmit or retry queued messages
@@ -259,7 +276,7 @@ class LoRaComm {
           m.nextAttemptMs = nowMs + LORA_COMM_ACK_TIMEOUT_MS;
           awaitingAckMsgId = m.msgId;
           awaitingAckSrcId = 0; // not used; we match by msgId only
-          Logger::printf(Logger::Level::Debug, "lora", "TX retry %u/%u: msgId=%u to=%u%s",
+          Logger::printf(Logger::Level::Info, "lora", "TX retry %u/%u: msgId=%u to=%u%s",
                          (unsigned)m.attempts, LORA_COMM_MAX_RETRIES, m.msgId, m.destId,
                          (connectionState == ConnectionState::Connected ? " (connected)" : ""));
         }
@@ -299,7 +316,7 @@ class LoRaComm {
       stallDetectStartMs = 0; // Reset timer
     }
     // Cleanup: drop expired messages
-    compactOutbox();
+    compactOutbox(nowMs);
     // Low-noise periodic stats (Verbose): every 5s
     LOG_EVERY_MS(5000, {
       Logger::printf(Logger::Level::Verbose, "lora", "stats tx=%u rx_data=%u rx_ack=%u drop=%u obx_max=%u", (unsigned)statsTx, (unsigned)statsRxData, (unsigned)statsRxAck, (unsigned)statsDropped, (unsigned)statsOutboxMax);
@@ -346,7 +363,7 @@ class LoRaComm {
   void forceReconnect() {
     if (mode == Mode::Slave) {
         connectionState = ConnectionState::Connecting;
-        nextReconnectAttemptMs = millis() + LORA_COMM_RECONNECT_ATTEMPT_MS;
+        nextReconnectAttemptMs = lastNowMs + LORA_COMM_RECONNECT_ATTEMPT_MS;
     }
     // For Master, there's no "reconnect" action to take. It just listens.
     // We can log this event for debugging if needed.
@@ -448,12 +465,12 @@ private:
     Radio.SetTxConfig(MODEM_LORA, LORA_COMM_TX_POWER_DBM, 0, LORA_COMM_BANDWIDTH,
                       LORA_COMM_SPREADING_FACTOR, LORA_COMM_CODING_RATE,
                       LORA_COMM_PREAMBLE_LEN, false,
-                      true, 0, 0, LORA_COMM_IQ_INVERT, 3000);
+                      true, 0, 0, LORA_COMM_TX_IQ_INVERT, 3000);
 
     Radio.SetRxConfig(MODEM_LORA, LORA_COMM_BANDWIDTH, LORA_COMM_SPREADING_FACTOR,
                       LORA_COMM_CODING_RATE, 0, LORA_COMM_PREAMBLE_LEN,
                       LORA_COMM_SYMBOL_TIMEOUT, false,
-                      0, true, 0, 0, LORA_COMM_IQ_INVERT, true);
+                      0, true, 0, 0, LORA_COMM_RX_IQ_INVERT, true);
 
     getInstance() = this;
     enterRxMode();
@@ -483,6 +500,13 @@ private:
   // Flags bitfield
   static constexpr uint8_t kFlagRequireAck = 0x01; // when set on DATA, receiver must ACK
 
+  // ACK queue for RX->TX decoupling
+  static constexpr uint8_t kMaxPendingAcks = 4;
+  struct PendingAck {
+    uint8_t targetId;
+    uint16_t messageId;
+  };
+
   static LoRaComm *&getInstance() {
     static LoRaComm *inst = nullptr;
     return inst;
@@ -492,15 +516,15 @@ private:
   uint8_t selfId;
   OnDataReceived onDataCb;
   OnAckReceived onAckCb;
+  OnMessageDropped onMsgDroppedCb;
   uint32_t lastAckOkMs;
   uint32_t lastRadioActivityMs;
   uint32_t lastNowMs;
   int16_t lastRssiDbm;
   uint32_t peerTimeoutMs = 15000; // Default, can be overridden
 
-  volatile bool rxPendingAck;
-  volatile uint8_t rxAckTargetId;
-  volatile uint16_t rxAckMessageId;
+  volatile PendingAck pendingAcks[kMaxPendingAcks];
+  volatile uint8_t pendingAckCount = 0;
 
   // Connection management
   uint32_t lastConnectionCheckMs;
@@ -553,7 +577,7 @@ private:
   }
 
   void onTxDone() {
-    lastRadioActivityMs = millis();
+    lastRadioActivityMs = lastNowMs;
     radioState = State::Idle;
     Logger::printf(Logger::Level::Debug, "lora", "TX done");
     const uint16_t justSentMsgId = currentTxMsgId;
@@ -566,7 +590,7 @@ private:
         if (m.inUse && m.msgId == justSentMsgId) {
           if (!m.requireAck) {
             m.inUse = false;
-            compactOutbox();
+            compactOutbox(lastNowMs);
           }
           break;
         }
@@ -577,7 +601,7 @@ private:
   }
 
   void onTxTimeout() {
-    lastRadioActivityMs = millis();
+    lastRadioActivityMs = lastNowMs;
     radioState = State::Idle;
     Logger::printf(Logger::Level::Warn, "lora", "TX timeout");
     statsTxTimeouts++;
@@ -588,7 +612,7 @@ private:
         OutMsg &m = outbox[i];
         if (m.inUse && m.msgId == timedOutMsgId) {
           if (m.requireAck) {
-            m.nextAttemptMs = millis() + LORA_COMM_ACK_TIMEOUT_MS;
+            m.nextAttemptMs = lastNowMs + LORA_COMM_ACK_TIMEOUT_MS;
           } else {
             m.inUse = false;
             statsDropped++;
@@ -598,14 +622,14 @@ private:
           break;
         }
       }
-      compactOutbox();
+      compactOutbox(lastNowMs);
     }
     currentTxMsgId = 0;
     enterRxMode();
   }
 
   void onRxDone(uint8_t *payload, uint16_t size, int16_t rssi) {
-    lastRadioActivityMs = millis();
+    lastRadioActivityMs = lastNowMs;
     lastRssiDbm = rssi;
     Radio.Sleep();
     radioState = State::Idle;
@@ -637,17 +661,24 @@ private:
 
     // Track peers and basic presence (any valid frame counts)
     // This is important for both master and slave connection state tracking
-    notePeerSeen(src, millis());
+    notePeerSeen(src, lastNowMs);
 
     switch (type) {
       case FrameType::Ack: {
         // ACK for our outgoing message
-        if (onAckCb != nullptr) onAckCb(src, msgId);
+        uint8_t attempts = 0;
+        for (size_t i = 0; i < outboxCount; i++) {
+          if (outbox[i].inUse && outbox[i].msgId == msgId) {
+            attempts = outbox[i].attempts;
+            break;
+          }
+        }
+        if (onAckCb != nullptr) onAckCb(src, msgId, attempts);
         statsRxAck++;
         Logger::printf(Logger::Level::Debug, "lora", "RX ACK from=%u msgId=%u%s", src, msgId,
                        (mode == Mode::Slave) ? " (slave mode)" : " (master mode)");
         if (mode == Mode::Slave) {
-          lastAckOkMs = millis();
+          lastAckOkMs = lastNowMs;
           // Let the tick handler manage connection state transitions.
           // Setting state here creates race conditions.
         } else if (mode == Mode::Master) {
@@ -655,15 +686,22 @@ private:
           // notePeerSeen is already called above for all frame types
         }
         // Remove matching outbox entry
+        Logger::printf(Logger::Level::Info, "lora", "Removing msgId %u from outbox after ACK", msgId);
         removeOutboxByMsgId(msgId);
         break;
       }
       case FrameType::Data: {
         // Application data; schedule ACK back to source only if requested
         if ((flags & kFlagRequireAck) != 0) {
-          rxAckTargetId = src;
-          rxAckMessageId = msgId;
-          rxPendingAck = true;
+          // Queue the ACK. This is in an interrupt context, so keep it fast.
+          if (pendingAckCount < kMaxPendingAcks) {
+            pendingAcks[pendingAckCount].targetId = src;
+            pendingAcks[pendingAckCount].messageId = msgId;
+            pendingAckCount++; // This should be atomic enough for this architecture
+          } else {
+            // This is bad, we're dropping an ACK. Log it if we can.
+            Logger::printf(Logger::Level::Error, "lora", "ACK queue full! Dropping ACK for msgId=%u", msgId);
+          }
         }
         statsRxData++;
         Logger::printf(Logger::Level::Info, "lora", "RX DATA from=%u len=%u%s", src, appLen,
@@ -756,20 +794,22 @@ private:
         outbox[i].inUse = false;
       }
     }
-    compactOutbox();
+    compactOutbox(lastNowMs);
   }
 
-  void compactOutbox() {
+  void compactOutbox(uint32_t nowMs) {
     // Remove exhausted retries and pack the array
     OutMsg tmp[LORA_COMM_MAX_OUTBOX];
     uint8_t n = 0;
     for (size_t i = 0; i < outboxCount; i++) {
       OutMsg &m = outbox[i];
       if (!m.inUse) continue;
-      if (m.requireAck && m.attempts >= LORA_COMM_MAX_RETRIES && (int32_t)(millis() - m.nextAttemptMs) >= 0) {
+      if (m.requireAck && m.attempts >= LORA_COMM_MAX_RETRIES && (int32_t)(nowMs - m.nextAttemptMs) >= 0) {
         // drop (count, log once per drop at Warn)
         statsDropped++;
-        Logger::printf(Logger::Level::Warn, "lora", "drop msgId=%u", m.msgId);
+        Logger::printf(Logger::Level::Warn, "lora", "drop msgId=%u, attempts=%u, now=%u, nextAttempt=%u", 
+                       m.msgId, m.attempts, nowMs, m.nextAttemptMs);
+        if (onMsgDroppedCb != nullptr) onMsgDroppedCb(m.msgId, m.attempts);
         continue;
       }
       tmp[n++] = m;
@@ -818,12 +858,12 @@ private:
     Radio.SetTxConfig(MODEM_LORA, LORA_COMM_TX_POWER_DBM, 0, LORA_COMM_BANDWIDTH,
                       LORA_COMM_SPREADING_FACTOR, LORA_COMM_CODING_RATE,
                       LORA_COMM_PREAMBLE_LEN, false,
-                      true, 0, 0, LORA_COMM_IQ_INVERT, 3000);
+                      true, 0, 0, LORA_COMM_TX_IQ_INVERT, 3000);
 
     Radio.SetRxConfig(MODEM_LORA, LORA_COMM_BANDWIDTH, LORA_COMM_SPREADING_FACTOR,
                       LORA_COMM_CODING_RATE, 0, LORA_COMM_PREAMBLE_LEN,
                       LORA_COMM_SYMBOL_TIMEOUT, false,
-                      0, true, 0, 0, LORA_COMM_IQ_INVERT, true);
+                      0, true, 0, 0, LORA_COMM_RX_IQ_INVERT, true);
     delay(5);
     enterRxMode();
   }

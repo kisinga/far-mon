@@ -67,10 +67,19 @@ private:
     std::shared_ptr<BatteryIconElement> batteryElement;
     std::shared_ptr<TextElement> statusTextElement;
 
+    // Application-level message statistics
+    struct LoRaMessageStats {
+        uint32_t successful = 0;
+        uint32_t recovered = 0;
+        uint32_t dropped = 0;
+    } loraStats;
+
     uint32_t lastSuccessfulAckMs = 0;
 
-    void onLoraAckReceived(uint8_t srcId, uint16_t messageId);
-    static void staticOnAckReceived(uint8_t srcId, uint16_t messageId);
+    void onLoraAckReceived(uint8_t srcId, uint16_t messageId, uint8_t attempts);
+    void onLoraMessageDropped(uint16_t messageId, uint8_t attempts);
+    static void staticOnAckReceived(uint8_t srcId, uint16_t messageId, uint8_t attempts);
+    static void staticOnMessageDropped(uint16_t messageId, uint8_t attempts);
     static RemoteApplicationImpl* callbackInstance;
 
     void setupUi();
@@ -123,6 +132,7 @@ void RemoteApplicationImpl::initialize() {
     loraHal->begin(ILoRaHal::Mode::Slave, config.deviceId);
     LOGI("Remote", "LoRa initialized");
     loraHal->setOnAckReceived(&RemoteApplicationImpl::staticOnAckReceived);
+    loraHal->setOnMessageDropped(&RemoteApplicationImpl::staticOnMessageDropped);
     loraHal->setMasterNodeId(config.masterNodeId);
     loraHal->setPeerTimeout(config.peerTimeoutMs);
     LOGI("Remote", "Sending registration frame...");
@@ -260,14 +270,30 @@ void RemoteApplicationImpl::run() {
     delay(1000);
 }
 
-void RemoteApplicationImpl::onLoraAckReceived(uint8_t srcId, uint16_t messageId) {
-    LOGD("Remote", "ACK received from %u for msgId %u", srcId, messageId);
+void RemoteApplicationImpl::onLoraAckReceived(uint8_t srcId, uint16_t messageId, uint8_t attempts) {
+    LOGI("Remote", "ACK received from %u for msgId %u after %u attempts", srcId, messageId, attempts);
+    if (attempts <= 1) {
+        loraStats.successful++;
+    } else {
+        loraStats.recovered++;
+    }
     lastSuccessfulAckMs = millis();
 }
 
-void RemoteApplicationImpl::staticOnAckReceived(uint8_t srcId, uint16_t messageId) {
+void RemoteApplicationImpl::onLoraMessageDropped(uint16_t messageId, uint8_t attempts) {
+    LOGW("Remote", "Message %u dropped after %u attempts", messageId, attempts);
+    loraStats.dropped++;
+}
+
+void RemoteApplicationImpl::staticOnAckReceived(uint8_t srcId, uint16_t messageId, uint8_t attempts) {
     if (callbackInstance) {
-        callbackInstance->onLoraAckReceived(srcId, messageId);
+        callbackInstance->onLoraAckReceived(srcId, messageId, attempts);
+    }
+}
+
+void RemoteApplicationImpl::staticOnMessageDropped(uint16_t messageId, uint8_t attempts) {
+    if (callbackInstance) {
+        callbackInstance->onLoraMessageDropped(messageId, attempts);
     }
 }
 

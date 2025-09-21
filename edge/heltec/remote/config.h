@@ -19,7 +19,7 @@ inline RemoteConfig buildRemoteConfig() {
 
 inline RemoteSensorConfig buildRemoteSensorConfig() {
     RemoteSensorConfig cfg{};
-    cfg.enableSensorSystem = false; // Disabled by default
+    cfg.enableSensorSystem = true; 
     return cfg;
 }
 

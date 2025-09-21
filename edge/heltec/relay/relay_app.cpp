@@ -57,13 +57,19 @@ private:
     std::shared_ptr<HeaderStatusElement> peerStatusElement;
     std::shared_ptr<HeaderStatusElement> wifiStatusElement;
 
+    // Application-level message statistics
+    struct MqttMessageStats {
+        uint32_t successful = 0;
+        uint32_t failed = 0;
+    } mqttStats;
+
     // LoRa message handling
     void onLoraDataReceived(uint8_t srcId, const uint8_t* payload, uint8_t length);
-    void onLoraAckReceived(uint8_t srcId, uint16_t messageId);
+    void onLoraAckReceived(uint8_t srcId, uint16_t messageId, uint8_t attempts);
 
     // Static callback functions for LoRa HAL
     static void staticOnDataReceived(uint8_t srcId, const uint8_t* payload, uint8_t length);
-    static void staticOnAckReceived(uint8_t srcId, uint16_t messageId);
+    static void staticOnAckReceived(uint8_t srcId, uint16_t messageId, uint8_t attempts);
 
     // Static instance pointer for callbacks
     static RelayApplicationImpl* callbackInstance;
@@ -118,7 +124,24 @@ void RelayApplicationImpl::initialize() {
         mqttConfig.deviceTopic = config.communication.mqtt.deviceTopic;
         mqttConfig.qos = config.communication.mqtt.qos;
         mqttConfig.retain = config.communication.mqtt.retain;
+        
+        // Pass through reliability settings
+        mqttConfig.connectionTimeoutMs = config.communication.mqtt.connectionTimeoutMs;
+        mqttConfig.keepAliveMs = config.communication.mqtt.keepAliveMs;
+        mqttConfig.retryIntervalMs = config.communication.mqtt.retryIntervalMs;
+        mqttConfig.maxRetryIntervalMs = config.communication.mqtt.maxRetryIntervalMs;
+        mqttConfig.maxRetryAttempts = config.communication.mqtt.maxRetryAttempts;
+        mqttConfig.maxQueueSize = config.communication.mqtt.maxQueueSize;
+        mqttConfig.enableMessageQueue = config.communication.mqtt.enableMessageQueue;
+        
         wifiHal->setMqttConfig(mqttConfig);
+        Serial.printf("[Relay] MQTT configured: broker=%s:%u, clientId=%s, topic=%s\n",
+                     mqttConfig.brokerHost ? mqttConfig.brokerHost : "null",
+                     mqttConfig.brokerPort,
+                     mqttConfig.clientId ? mqttConfig.clientId : "null",
+                     mqttConfig.baseTopic ? mqttConfig.baseTopic : "null");
+    } else {
+        Serial.println("[Relay] MQTT not configured - check WiFi and MQTT enable flags");
     }
     
     // Begin hardware
@@ -155,7 +178,7 @@ void RelayApplicationImpl::initialize() {
     
     scheduler.registerTask("lora", [this](CommonAppState& state){
         loraService->update(state.nowMs);
-        Radio.IrqProcess(); // Handle radio interrupts
+        // Radio.IrqProcess() moved to main run loop for higher frequency
         if (peerStatusElement) {
             auto connectionState = loraService->getConnectionState();
             bool hasActivePeers = (connectionState == ILoRaService::ConnectionState::Connected);
@@ -173,11 +196,21 @@ void RelayApplicationImpl::initialize() {
             if (mqttStatusText) {
                 bool connected = wifiService->isMqttConnected();
                 if (connected) {
-                    // UTF-8 checkmark
-                    mqttStatusText->setText("MQTT OK");
+                    // Show connection status with queue info
+                    char statusText[32];
+                    uint16_t queueCount = wifiHal->getQueuedMessageCount();
+                    if (queueCount > 0) {
+                        snprintf(statusText, sizeof(statusText), "MQTT OK (%u)", queueCount);
+                    } else {
+                        strcpy(statusText, "MQTT OK");
+                    }
+                    mqttStatusText->setText(statusText);
                 } else {
-                    // UTF-8 ballot X
-                    mqttStatusText->setText("MQTT X");
+                    // Show connection state and retry info
+                    char statusText[32];
+                    uint32_t retryAttempts = wifiHal->getRetryAttempts();
+                    snprintf(statusText, sizeof(statusText), "MQTT X (%u)", retryAttempts);
+                    mqttStatusText->setText(statusText);
                 }
             }
         }, config.communication.wifi.statusCheckIntervalMs);
@@ -252,22 +285,26 @@ void RelayApplicationImpl::onLoraDataReceived(uint8_t srcId, const uint8_t* payl
         if (!wifiHal->publishMqtt(topicSuffix, payload, length)) {
             LOGW("Relay", "Failed to publish %u bytes from device %u to MQTT topic '%s'",
                  length, srcId, fullTopic);
+            mqttStats.failed++;
         } else {
             LOGI("Relay", "Successfully published %u bytes from device %u to MQTT topic '%s'",
                  length, srcId, fullTopic);
+            mqttStats.successful++;
         }
     }
 
 }
 
-void RelayApplicationImpl::onLoraAckReceived(uint8_t srcId, uint16_t messageId) {
+void RelayApplicationImpl::onLoraAckReceived(uint8_t srcId, uint16_t messageId, uint8_t attempts) {
     // Handle ACK received (for debugging)
-    LOGD("Relay", "ACK received from device %u for message %u", srcId, messageId);
+    LOGD("Relay", "ACK received from device %u for message %u after %u attempts", srcId, messageId, attempts);
 }
 
 void RelayApplicationImpl::run() {
-    // The scheduler runs tasks in the background. We can just yield.
-    vTaskDelay(pdMS_TO_TICKS(1000));
+    // The scheduler runs tasks in the background. We can use the main loop
+    // for high-frequency polling of radio interrupts.
+    Radio.IrqProcess();
+    vTaskDelay(pdMS_TO_TICKS(5)); // Yield to other tasks
 }
 
 // Static callback functions for LoRa HAL
@@ -277,9 +314,9 @@ void RelayApplicationImpl::staticOnDataReceived(uint8_t srcId, const uint8_t* pa
     }
 }
 
-void RelayApplicationImpl::staticOnAckReceived(uint8_t srcId, uint16_t messageId) {
+void RelayApplicationImpl::staticOnAckReceived(uint8_t srcId, uint16_t messageId, uint8_t attempts) {
     if (callbackInstance) {
-        callbackInstance->onLoraAckReceived(srcId, messageId);
+        callbackInstance->onLoraAckReceived(srcId, messageId, attempts);
     }
 }
 

@@ -8,7 +8,8 @@ public:
     enum class Mode : uint8_t { Master = 0, Slave = 1 };
 
     using OnDataReceived = void (*)(uint8_t srcId, const uint8_t *payload, uint8_t length);
-    using OnAckReceived = void (*)(uint8_t srcId, uint16_t messageId);
+    using OnAckReceived = void (*)(uint8_t srcId, uint16_t messageId, uint8_t attempts);
+    using OnMessageDropped = void (*)(uint16_t messageId, uint8_t attempts);
 
     virtual ~ILoRaHal() = default;
 
@@ -19,6 +20,7 @@ public:
     
     virtual void setOnDataReceived(OnDataReceived cb) = 0;
     virtual void setOnAckReceived(OnAckReceived cb) = 0;
+    virtual void setOnMessageDropped(OnMessageDropped cb) = 0;
     virtual void setPeerTimeout(uint32_t timeoutMs) = 0;
     virtual void setVerbose(bool verbose) = 0;
 
@@ -42,6 +44,7 @@ public:
     bool sendData(uint8_t targetId, const uint8_t* data, uint8_t len, bool ack) override;
     void setOnDataReceived(OnDataReceived cb) override;
     void setOnAckReceived(OnAckReceived cb) override;
+    void setOnMessageDropped(OnMessageDropped cb) override;
     void setPeerTimeout(uint32_t timeoutMs) override;
     void setVerbose(bool verbose) override;
     bool isConnected() const override;
@@ -79,6 +82,10 @@ void LoRaCommHal::setOnDataReceived(OnDataReceived cb) {
 
 void LoRaCommHal::setOnAckReceived(OnAckReceived cb) {
     _lora.setOnAckReceived(cb);
+}
+
+void LoRaCommHal::setOnMessageDropped(OnMessageDropped cb) {
+    _lora.setOnMessageDropped(cb);
 }
 
 void LoRaCommHal::setPeerTimeout(uint32_t timeoutMs) {

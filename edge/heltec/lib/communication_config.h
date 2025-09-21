@@ -18,6 +18,15 @@ struct MqttConfig {
     const char* deviceTopic = nullptr;  // Optional device-specific topic (defaults to deviceId)
     uint8_t qos = 0;                    // QoS level (0/1)
     bool retain = false;                // Retain flag
+    
+    // Reliability settings
+    uint32_t connectionTimeoutMs = 10000;    // Connection timeout
+    uint32_t keepAliveMs = 30;               // Keep alive interval
+    uint32_t retryIntervalMs = 5000;         // Base retry interval
+    uint32_t maxRetryIntervalMs = 60000;     // Maximum retry interval (exponential backoff)
+    uint8_t maxRetryAttempts = 10;           // Maximum retry attempts
+    uint16_t maxQueueSize = 50;              // Maximum queued messages
+    bool enableMessageQueue = true;          // Enable message queuing
 };
 
 // USB Configuration

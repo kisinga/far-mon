@@ -20,6 +20,15 @@ RelayConfig buildRelayConfig() {
     cfg.communication.mqtt.clientId = "relay-1"; // MQTT client ID should be a string
     // Leave deviceTopic null to publish under baseTopic/<srcId>
     cfg.communication.mqtt.deviceTopic = nullptr;
+    
+    // Enhanced reliability settings
+    cfg.communication.mqtt.connectionTimeoutMs = 15000;    // 15 second timeout
+    cfg.communication.mqtt.keepAliveMs = 30;               // 30 second keep alive
+    cfg.communication.mqtt.retryIntervalMs = 5000;         // 5 second base retry
+    cfg.communication.mqtt.maxRetryIntervalMs = 60000;     // 1 minute max retry
+    cfg.communication.mqtt.maxRetryAttempts = 10;          // 10 retry attempts
+    cfg.communication.mqtt.maxQueueSize = 50;              // 50 message queue
+    cfg.communication.mqtt.enableMessageQueue = true;      // Enable queuing
 
     // This field doesn't exist anymore, CommunicationManager is implicitly enabled by transports
     // cfg.communication.enableCommunicationManager = true;
