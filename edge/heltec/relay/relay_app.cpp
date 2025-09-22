@@ -87,6 +87,11 @@ void RelayApplicationImpl::initialize() {
     // config is now initialized in the constructor
     coreSystem.init(config);
     
+    if (config.globalDebugMode) {
+        Logger::setLevel(Logger::Level::Debug);
+        LOGD("System", "Debug mode is ON. Log level set to DEBUG.");
+    }
+
     // Create self-contained HALs
     displayHal = std::make_unique<OledDisplayHal>();
     loraHal = std::make_unique<LoRaCommHal>();

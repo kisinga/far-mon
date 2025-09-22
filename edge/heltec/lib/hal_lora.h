@@ -23,6 +23,8 @@ public:
     virtual void setOnMessageDropped(OnMessageDropped cb) = 0;
     virtual void setPeerTimeout(uint32_t timeoutMs) = 0;
     virtual void setVerbose(bool verbose) = 0;
+    virtual bool isMasterHeard() const = 0;
+    virtual bool isTxBusy() const = 0;
 
     virtual bool isConnected() const = 0;
     virtual int16_t getLastRssiDbm() const = 0;
@@ -56,6 +58,12 @@ public:
     void setMasterNodeId(uint8_t masterId) override;
     void forceReconnect() override;
     ConnectionState getConnectionState() const override;
+
+    bool isTxBusy() const override {
+        // The radio is considered busy if it's not in sleep mode.
+        // Radio.Sleep() returns the radio's operating mode, where 0 (RF_IDLE) means it's sleeping/idle.
+        return Radio.Sleep() != 0;
+    }
 
 private:
     LoRaComm _lora;

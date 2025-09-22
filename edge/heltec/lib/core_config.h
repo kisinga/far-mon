@@ -21,6 +21,7 @@ struct DeviceConfig {
     uint32_t heartbeatIntervalMs;
     bool enableDisplay;
     uint32_t displayUpdateIntervalMs;
+    bool globalDebugMode = false; // System-wide debug flag
 
     // Centralized hardware and communication configuration
     BatteryMonitor::Config battery;
@@ -73,7 +74,8 @@ struct RemoteConfig : DeviceConfig {
     bool enableAnalogSensor = true;
     uint8_t analogInputPin = 34;  // Default for Heltec LoRa 32 V3
     uint32_t analogReadIntervalMs = 200;
-    uint32_t telemetryReportIntervalMs = 2000;
+    uint32_t telemetryReportIntervalMs = 60000;
+    uint32_t debugTelemetryReportIntervalMs = 5000; // Faster reporting for debug
     float analogReferenceVoltage = 3.30f;
     uint8_t masterNodeId = 1;
     bool useCalibratedAdc = true;  // Use analogReadMilliVolts() for better accuracy

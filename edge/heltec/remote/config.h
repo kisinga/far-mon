@@ -10,6 +10,7 @@ inline RemoteConfig buildRemoteConfig() {
     RemoteConfig cfg = RemoteConfig::create(3); // Example ID 3
     // Remotes usually operate over LoRa only; WiFi off by default
     cfg.communication.wifi.enableWifi = false;
+    cfg.globalDebugMode = true; // Enable debug mode for testing
 
     // Use board-defined safe ADC pin for ESP32-S3 (Heltec V3): GPIO1
     cfg.battery.adcPin = BATTERY_ADC_PIN;

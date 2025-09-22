@@ -30,8 +30,7 @@ RelayConfig buildRelayConfig() {
     cfg.communication.mqtt.maxQueueSize = 50;              // 50 message queue
     cfg.communication.mqtt.enableMessageQueue = true;      // Enable queuing
 
-    // This field doesn't exist anymore, CommunicationManager is implicitly enabled by transports
-    // cfg.communication.enableCommunicationManager = true;
+    cfg.globalDebugMode = true; // Enable debug mode for testing
 
     return cfg;
 }

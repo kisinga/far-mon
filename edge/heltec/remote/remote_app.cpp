@@ -9,6 +9,7 @@
 #include "lib/hal_lora.h"
 #include "lib/hal_wifi.h"
 #include "lib/hal_battery.h"
+#include "lib/hal_persistence.h" // <-- Add include
 #include "lib/svc_ui.h"
 #include "lib/svc_comms.h"
 #include "lib/svc_battery.h"
@@ -49,6 +50,7 @@ private:
     std::unique_ptr<ILoRaHal> loraHal;
     std::unique_ptr<IWifiHal> wifiHal;
     std::unique_ptr<IBatteryHal> batteryHal;
+    std::unique_ptr<IPersistenceHal> persistenceHal; // <-- Add member
 
     std::unique_ptr<UiService> uiService;
     std::unique_ptr<CommsService> commsService;
@@ -58,6 +60,7 @@ private:
 
     SensorManager sensorManager;
     std::unique_ptr<LoRaBatchTransmitter> sensorTransmitter;
+    std::shared_ptr<YFS201WaterFlowSensor> waterFlowSensor; // <-- Add member
 
     // UI Elements must be stored to manage their lifetime
     std::vector<std::shared_ptr<UIElement>> uiElements;
@@ -98,11 +101,17 @@ void RemoteApplicationImpl::initialize() {
     // config and sensorConfig are now initialized in the constructor
     coreSystem.init(config);
 
+    if (config.globalDebugMode) {
+        Logger::setLevel(Logger::Level::Debug);
+        LOGD("System", "Debug mode is ON. Log level set to DEBUG.");
+    }
+
     LOGI("Remote", "Creating HALs");
     displayHal = std::make_unique<OledDisplayHal>();
     loraHal = std::make_unique<LoRaCommHal>();
     loraHal->setVerbose(config.communication.usb.verboseLogging);
     batteryHal = std::make_unique<BatteryMonitorHal>(config.battery);
+    persistenceHal = std::make_unique<FlashPersistenceHal>(); // <-- Instantiate HAL
 
     LOGI("Remote", "Creating services");
     uiService = std::make_unique<UiService>(*displayHal);
@@ -156,7 +165,25 @@ void RemoteApplicationImpl::initialize() {
     // Perform an initial sensor read and telemetry transmission
     if (sensorConfig.enableSensorSystem) {
         LOGI("Remote", "Performing initial sensor reading and telemetry transmission...");
-        sensorManager.update(millis());
+        // This logic is duplicated from the 'sensors' task to send an immediate report on boot
+        if (loraService->isConnected() && sensorTransmitter) {
+            std::vector<SensorReading> readings;
+            sensorManager.readAllSensors(readings);
+
+            if (!sensorConfig.jsnSr04tWaterLevelConfig.enabled) {
+                readings.push_back({"water_level", NAN, millis()});
+            }
+            if (!sensorConfig.aht10TempHumidityConfig.enabled) {
+                readings.push_back({"temp_hum", NAN, millis()});
+            }
+            if (!sensorConfig.rs485Config.enabled) {
+                readings.push_back({"rs485", NAN, millis()});
+            }
+
+            if (!readings.empty()) {
+                sensorTransmitter->transmitBatch(readings);
+            }
+        }
     }
 
     LOGI("Remote", "Registering scheduler tasks");
@@ -166,6 +193,13 @@ void RemoteApplicationImpl::initialize() {
     scheduler.registerTask("battery", [this](CommonAppState& state){
         batteryService->update(state.nowMs);
     }, 1000);
+    if (sensorConfig.enableSensorSystem && sensorConfig.waterFlowConfig.enabled) {
+        scheduler.registerTask("persistence", [this](CommonAppState& state){
+            if (waterFlowSensor) {
+                waterFlowSensor->saveTotalVolume();
+            }
+        }, 60000); // Save volume every minute
+    }
     scheduler.registerTask("display", [this](CommonAppState& state){
         uiService->tick();
     }, config.displayUpdateIntervalMs);
@@ -178,12 +212,48 @@ void RemoteApplicationImpl::initialize() {
         loraStatusElement->setLoraStatus(isConnected, loraService->getLastRssiDbm());
         batteryElement->setStatus(batteryService->getBatteryPercent(), batteryService->isCharging());
     }, 50);
-    if (sensorConfig.enableSensorSystem) {
-        scheduler.registerTask("sensors", [this](CommonAppState& state){
-            if (loraService->isConnected()) {
-              sensorManager.update(state.nowMs);
+    if (config.globalDebugMode) {
+        scheduler.registerTask("interrupt_debug", [](CommonAppState& state){
+            if (YFS201WaterFlowSensor::getAndClearInterruptFlag()) {
+                LOGD("Interrupt", "Water flow pulse detected!");
             }
-        }, config.telemetryReportIntervalMs);
+        }, 10); // High-frequency check
+    }
+    if (sensorConfig.enableSensorSystem) {
+        uint32_t reportInterval = config.globalDebugMode ? 
+                                  config.debugTelemetryReportIntervalMs : 
+                                  config.telemetryReportIntervalMs;
+        scheduler.registerTask("sensors", [this](CommonAppState& state){
+            if (!loraService->isConnected() || !sensorTransmitter) {
+                return;
+            }
+
+            // Create a comprehensive list of readings for this interval
+            std::vector<SensorReading> readings;
+
+            // 1. Read from all active sensors
+            sensorManager.readAllSensors(readings);
+
+            // 2. Add status for disabled sensors
+            if (!sensorConfig.jsnSr04tWaterLevelConfig.enabled) {
+                readings.push_back({"water_level", NAN, state.nowMs});
+            }
+            if (!sensorConfig.aht10TempHumidityConfig.enabled) {
+                readings.push_back({"temp_hum", NAN, state.nowMs});
+            }
+            if (!sensorConfig.rs485Config.enabled) {
+                readings.push_back({"rs485", NAN, state.nowMs});
+            }
+
+            // 3. Transmit the batch, but only if the radio isn't busy
+            if (!readings.empty()) {
+                if (loraHal->isTxBusy()) {
+                    LOGD("Remote", "LoRa TX is busy, skipping telemetry transmission for this interval.");
+                } else {
+                    sensorTransmitter->transmitBatch(readings);
+                }
+            }
+        }, reportInterval);
     }
     scheduler.registerTask("lora_watchdog", [this](CommonAppState& state){
         if (state.nowMs - lastSuccessfulAckMs > config.maxQuietTimeMs) {
@@ -246,28 +316,32 @@ void RemoteApplicationImpl::setupSensors() {
     }
 
     auto transmitter = std::make_unique<LoRaBatchTransmitter>(loraHal.get(), config.deviceId);
-    sensorManager.setTransmitter(transmitter.get());
+    // sensorManager.setTransmitter(transmitter.get()); // No longer needed
     sensorTransmitter = std::move(transmitter);
 
-    // Add debug sensors
-    if (sensorConfig.temperatureConfig.enabled) {
-        auto tempSensor = SensorFactory::createDebugTemperatureSensor();
-        sensorManager.addSensor(std::move(tempSensor));
-    }
+    // --- Real Sensors ---
 
-    if (sensorConfig.humidityConfig.enabled) {
-        auto humiditySensor = SensorFactory::createDebugHumiditySensor();
-        sensorManager.addSensor(std::move(humiditySensor));
-    }
+    // Add the battery monitor sensor
+    sensorManager.addSensor(SensorFactory::createBatteryMonitorSensor(batteryService.get()));
 
-    if (sensorConfig.batteryConfig.enabled) {
-        auto batterySensor = SensorFactory::createDebugBatterySensor();
-        sensorManager.addSensor(std::move(batterySensor));
+    // Add water flow sensor if enabled
+    if (sensorConfig.waterFlowConfig.enabled) {
+        waterFlowSensor = SensorFactory::createYFS201WaterFlowSensor(
+            sensorConfig.pins.waterFlow,
+            persistenceHal.get(),
+            "water_meter"
+        );
+        sensorManager.addSensor(waterFlowSensor);
     }
 }
 
 void RemoteApplicationImpl::run() {
-    delay(1000);
+    // This run loop is for high-frequency, non-blocking tasks.
+    // The main application logic is handled by the scheduler.
+
+    // A small delay to prevent this loop from starving other tasks if they
+    // were ever added to the main Arduino loop.
+    delay(1);
 }
 
 void RemoteApplicationImpl::onLoraAckReceived(uint8_t srcId, uint16_t messageId, uint8_t attempts) {

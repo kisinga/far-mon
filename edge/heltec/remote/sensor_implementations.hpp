@@ -7,6 +7,8 @@
 #include "lib/hal_lora.h"
 #include "lib/common_message_types.h"
 #include <vector>
+#include "lib/hal_persistence.h" // Include the new persistence HAL
+#include "lib/svc_battery.h" // Include for IBatteryService
 
 // ============================================================================
 // LoRa Batch Transmitter Implementation
@@ -81,9 +83,13 @@ String LoRaBatchTransmitter::formatReadings(const std::vector<SensorReading>& re
     // This is a placeholder for a more robust serialization format like JSON or MessagePack
     String payload = "";
     for (size_t i = 0; i < readings.size(); ++i) {
-        payload += readings[i].type; // This now works because type is const char*
+        payload += readings[i].type;
         payload += ":";
-        payload += String(readings[i].value, 2);
+        if (isnan(readings[i].value)) {
+            payload += "disabled";
+        } else {
+            payload += String(readings[i].value, 2);
+        }
         if (i < readings.size() - 1) {
             payload += ",";
         }
@@ -92,65 +98,154 @@ String LoRaBatchTransmitter::formatReadings(const std::vector<SensorReading>& re
 }
 
 // ============================================================================
-// DEBUG SENSOR IMPLEMENTATIONS
+// YF-S201 Water Flow Sensor Implementation
 // ============================================================================
 
-class DebugTemperatureSensor : public ISensor {
+class YFS201WaterFlowSensor : public ISensor {
 public:
-    DebugTemperatureSensor() {}
+    YFS201WaterFlowSensor(uint8_t pin, IPersistenceHal* persistence, const char* persistence_namespace);
+    ~YFS201WaterFlowSensor();
 
-    void begin() override {
-        // Initialize random seed for more realistic values
-        randomSeed(analogRead(0));
+    void begin() override;
+    void read(std::vector<SensorReading>& readings) override;
+    const char* getName() const override { return "YFS201WaterFlow"; }
+
+    // Public static method to check and clear the interrupt flag
+    static bool getAndClearInterruptFlag() {
+        if (_interruptFired) {
+            _interruptFired = false;
+            return true;
+        }
+        return false;
     }
 
-    void read(std::vector<SensorReading>& readings) override {
-        // Generate a realistic temperature reading (15-35°C)
-        float temperature = 20.0f + random(-50, 50) / 10.0f;
-        readings.push_back({"temp", temperature, millis()});
-    }
+    // Public method for external task to save the total volume
+    void saveTotalVolume();
 
-    const char* getName() const override {
-        return "DebugTemperature";
-    }
+private:
+    const uint8_t _pin;
+    IPersistenceHal* _persistence;
+    const char* _persistence_namespace;
+    
+    // Pulse counting
+    static void IRAM_ATTR pulseCounter();
+    static volatile uint32_t _pulseCount;
+    static volatile bool _interruptFired; // Flag for debug logging
+    
+    // Last read time for flow rate calculation
+    unsigned long _lastReadTimeMs = 0;
+    
+    // Total volume tracking
+    uint32_t _totalPulses = 0;
+
+    // YF-S201 constant: pulses per liter (can be calibrated)
+    const float PULSES_PER_LITER = 450.0f;
 };
 
-class DebugHumiditySensor : public ISensor {
+// Define static members
+volatile uint32_t YFS201WaterFlowSensor::_pulseCount = 0;
+volatile bool YFS201WaterFlowSensor::_interruptFired = false;
+
+YFS201WaterFlowSensor::YFS201WaterFlowSensor(uint8_t pin, IPersistenceHal* persistence, const char* persistence_namespace)
+    : _pin(pin), _persistence(persistence), _persistence_namespace(persistence_namespace) {
+}
+
+YFS201WaterFlowSensor::~YFS201WaterFlowSensor() {
+    if (_pin != 0) {
+        detachInterrupt(digitalPinToInterrupt(_pin));
+    }
+}
+
+void YFS201WaterFlowSensor::begin() {
+    if (_persistence) {
+        _persistence->begin(_persistence_namespace);
+        _totalPulses = _persistence->loadU32("totalPulses");
+        _persistence->end();
+        LOGD(getName(), "Loaded total pulses from memory: %u", _totalPulses);
+    }
+
+    pinMode(_pin, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(_pin), pulseCounter, FALLING);
+    _lastReadTimeMs = millis();
+}
+
+void IRAM_ATTR YFS201WaterFlowSensor::pulseCounter() {
+    _pulseCount++;
+    _interruptFired = true;
+}
+
+void YFS201WaterFlowSensor::read(std::vector<SensorReading>& readings) {
+    uint32_t currentPulses = 0;
+    
+    // Safely read and reset the pulse counter
+    noInterrupts();
+    currentPulses = _pulseCount;
+    _pulseCount = 0;
+    interrupts();
+
+    unsigned long currentTimeMs = millis();
+    unsigned long elapsedTimeMs = currentTimeMs - _lastReadTimeMs;
+    _lastReadTimeMs = currentTimeMs;
+
+    // Calculate flow rate in Liters/Minute
+    float flowRateLPM = 0.0f;
+    if (elapsedTimeMs > 0) {
+        // Frequency (Hz) = pulses / (time in seconds)
+        float frequency = (float)currentPulses / (elapsedTimeMs / 1000.0f);
+        // YF-S201 specific conversion from frequency to L/min (Q = F/7.5, but pulses/liter is more direct)
+        // We'll use our PULSES_PER_LITER constant for better accuracy.
+        // Flow rate (L/s) = frequency / PULSES_PER_LITER
+        // Flow rate (L/min) = (frequency * 60) / PULSES_PER_LITER
+        flowRateLPM = (frequency * 60.0f) / PULSES_PER_LITER;
+    }
+
+    // Update total volume
+    _totalPulses += currentPulses;
+    float totalVolumeLiters = (float)_totalPulses / PULSES_PER_LITER;
+
+    readings.push_back({"flow_rate", flowRateLPM, currentTimeMs});
+    readings.push_back({"total_vol", totalVolumeLiters, currentTimeMs});
+    
+    LOGD(getName(), "Pulses: %u, Rate: %.2f L/min, Total: %.2f L", currentPulses, flowRateLPM, totalVolumeLiters);
+}
+
+void YFS201WaterFlowSensor::saveTotalVolume() {
+    if (_persistence) {
+        _persistence->begin(_persistence_namespace);
+        bool success = _persistence->saveU32("totalPulses", _totalPulses);
+        _persistence->end();
+        if (success) {
+            LOGD(getName(), "Successfully saved total pulses: %u", _totalPulses);
+        } else {
+            LOGW(getName(), "Failed to save total pulses.");
+        }
+    }
+}
+
+// ============================================================================
+// REAL SENSOR IMPLEMENTATIONS
+// ============================================================================
+
+class BatteryMonitorSensor : public ISensor {
 public:
-    DebugHumiditySensor() {}
+    BatteryMonitorSensor(IBatteryService* batteryService) : _batteryService(batteryService) {}
 
     void begin() override {
-        randomSeed(analogRead(0) + 1);
+        // Nothing to initialize, service is managed externally
     }
 
     void read(std::vector<SensorReading>& readings) override {
-        // Generate a realistic humidity reading (40-80%)
-        float humidity = 60.0f + random(-200, 200) / 10.0f;
-        readings.push_back({"hum", humidity, millis()});
+        if (_batteryService) {
+            readings.push_back({"batt_pct", (float)_batteryService->getBatteryPercent(), millis()});
+        }
     }
 
     const char* getName() const override {
-        return "DebugHumidity";
-    }
-};
-
-class DebugBatterySensor : public ISensor {
-public:
-    DebugBatterySensor() {}
-
-    void begin() override {
-        randomSeed(analogRead(0) + 2);
+        return "BatteryMonitor";
     }
 
-    void read(std::vector<SensorReading>& readings) override {
-        // Generate a battery voltage reading (3.0-4.2V)
-        float batteryVoltage = 3.7f + random(-7, 5) / 10.0f;
-        readings.push_back({"batt", batteryVoltage, millis()});
-    }
-
-    const char* getName() const override {
-        return "DebugBattery";
-    }
+private:
+    IBatteryService* _batteryService;
 };
 
 // ============================================================================
@@ -158,16 +253,12 @@ public:
 // ============================================================================
 
 namespace SensorFactory {
-    std::unique_ptr<ISensor> createDebugTemperatureSensor() {
-        return std::make_unique<DebugTemperatureSensor>();
+    std::shared_ptr<YFS201WaterFlowSensor> createYFS201WaterFlowSensor(uint8_t pin, IPersistenceHal* persistence, const char* persistence_namespace) {
+        return std::make_shared<YFS201WaterFlowSensor>(pin, persistence, persistence_namespace);
     }
 
-    std::unique_ptr<ISensor> createDebugHumiditySensor() {
-        return std::make_unique<DebugHumiditySensor>();
-    }
-
-    std::unique_ptr<ISensor> createDebugBatterySensor() {
-        return std::make_unique<DebugBatterySensor>();
+    std::shared_ptr<ISensor> createBatteryMonitorSensor(IBatteryService* batteryService) {
+        return std::make_shared<BatteryMonitorSensor>(batteryService);
     }
 
     // In a real implementation, you would have factory functions here like:

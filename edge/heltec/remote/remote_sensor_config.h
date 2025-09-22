@@ -7,43 +7,41 @@
 
 // Remote Sensor Configuration
 struct RemoteSensorConfig {
-    bool enableSensorSystem = true; // Enable for debug sensors
+    bool enableSensorSystem = true;
 
-    // Debug sensors (enabled by default for testing)
+    // --- Real Sensors ---
     struct {
-        bool enabled = true;
-    } temperatureConfig;
-    struct {
-        bool enabled = true;
-    } humidityConfig;
-    struct {
-        bool enabled = true;
-    } batteryConfig;
+        bool enabled = true; // Enabled by default as it's our focus
+    } waterFlowConfig; 
 
-    // Real sensors (disabled by default)
     struct {
         bool enabled = false;
-    } ultrasonicConfig;
+    } jsnSr04tWaterLevelConfig; // Replaces ultrasonic and waterLevel
+
     struct {
         bool enabled = false;
-    } waterLevelConfig;
-    struct {
-        bool enabled = false;
-    } waterFlowConfig;
+    } aht10TempHumidityConfig; // Replaces tempHumidity
+
     struct {
         bool enabled = false;
     } rs485Config;
+    
+    // --- Debug Sensors ---
+    // Note: Debug sensors are now controlled by the globalDebugMode flag in CoreConfig,
+    // not by a flag here. This section is for pin definitions.
     struct {
-        bool enabled = false;
-    } tempHumidityConfig;
+        // No config needed, it's just for random data
+    } debugTemperatureConfig;
 
+
+    // --- Pin Definitions ---
     struct {
-        uint8_t ultrasonicTrig = 0;
-        uint8_t ultrasonicEcho = 0;
-        uint8_t waterLevel = 0;
-        uint8_t waterFlow = 0;
+        uint8_t waterFlow = 7; 
+        uint8_t jsnSr04tTrig = 0;
+        uint8_t jsnSr04tEcho = 0;
+        uint8_t aht10Sda = 0; // I2C pins are often fixed, but can be defined
+        uint8_t aht10Scl = 0;
         uint8_t rs485RE = 0;
         uint8_t rs485DE = 0;
-        uint8_t tempHumidity = 0;
     } pins;
 };

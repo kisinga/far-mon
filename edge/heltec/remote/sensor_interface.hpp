@@ -34,37 +34,22 @@ public:
 // Manages a collection of sensors and triggers batch transmissions.
 class SensorManager {
 public:
-    SensorManager() : _transmitter(nullptr), _batchSize(1) {}
+    SensorManager() = default;
 
-    void addSensor(std::unique_ptr<ISensor> sensor) {
-        _sensors.push_back(std::move(sensor));
-    }
-
-    void setTransmitter(SensorBatchTransmitter* transmitter) {
-        _transmitter = transmitter;
-    }
-
-    void setBatchSize(size_t batchSize) {
-        _batchSize = batchSize;
-    }
-
-    void update(uint32_t nowMs) {
-        // Read from all sensors
-        for (const auto& sensor : _sensors) {
-            sensor->read(_readings);
+    void addSensor(std::shared_ptr<ISensor> sensor) {
+        if (sensor) {
+            sensor->begin(); // Initialize the sensor when it's added
+            _sensors.push_back(sensor);
         }
+    }
 
-        // Attempt to transmit if batch is ready
-        if (_transmitter && _readings.size() >= _batchSize) {
-            if (_transmitter->transmitBatch(_readings)) {
-                _readings.clear(); // Clear ONLY on successful queueing
-            }
+    // Reads from all managed sensors and appends their readings to the provided vector
+    void readAllSensors(std::vector<SensorReading>& readings) {
+        for (const auto& sensor : _sensors) {
+            sensor->read(readings);
         }
     }
 
 private:
-    std::vector<std::unique_ptr<ISensor>> _sensors;
-    SensorBatchTransmitter* _transmitter;
-    std::vector<SensorReading> _readings;
-    size_t _batchSize;
+    std::vector<std::shared_ptr<ISensor>> _sensors;
 };
