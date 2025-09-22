@@ -21,6 +21,8 @@
 #include "lib/ui_header_status_element.h"
 #include "config.h"
 #include <memory>
+#include "lib/hal_persistence.h"
+#include "remote_device_manager.h"
 
 
 class RelayApplicationImpl {
@@ -49,6 +51,8 @@ private:
     std::unique_ptr<IBatteryService> batteryService;
     std::unique_ptr<IWifiService> wifiService;
     std::unique_ptr<ILoRaService> loraService;
+    std::unique_ptr<IPersistenceHal> persistenceHal;
+    std::unique_ptr<RemoteDeviceManager> deviceManager;
 
     // UI Elements
     std::vector<std::shared_ptr<UIElement>> uiElements;
@@ -56,6 +60,8 @@ private:
     std::shared_ptr<BatteryIconElement> batteryElement;
     std::shared_ptr<HeaderStatusElement> peerStatusElement;
     std::shared_ptr<HeaderStatusElement> wifiStatusElement;
+
+    uint32_t _errorCount = 0;
 
     // Application-level message statistics
     struct MqttMessageStats {
@@ -85,6 +91,12 @@ RelayApplicationImpl::RelayApplicationImpl() :
 
 void RelayApplicationImpl::initialize() {
     // config is now initialized in the constructor
+
+    // ---
+    // Critical: HALs must be created FIRST
+    // ---
+    persistenceHal = std::make_unique<FlashPersistenceHal>();
+
     coreSystem.init(config);
     
     if (config.globalDebugMode) {
@@ -92,12 +104,21 @@ void RelayApplicationImpl::initialize() {
         LOGD("System", "Debug mode is ON. Log level set to DEBUG.");
     }
 
+    // Load persistent state
+    persistenceHal->begin("app_state");
+    _errorCount = persistenceHal->loadU32("errorCount", 0);
+    persistenceHal->end();
+
     // Create self-contained HALs
     displayHal = std::make_unique<OledDisplayHal>();
     loraHal = std::make_unique<LoRaCommHal>();
     loraHal->setPeerTimeout(config.peerTimeoutMs);
     loraHal->setVerbose(config.communication.usb.verboseLogging);
     batteryHal = std::make_unique<BatteryMonitorHal>(config.battery);
+
+    // Create the device manager
+    deviceManager = std::make_unique<RemoteDeviceManager>(loraHal.get(), persistenceHal.get());
+    deviceManager->begin();
 
     // Create services
     uiService = std::make_unique<UiService>(*displayHal);
@@ -181,6 +202,26 @@ void RelayApplicationImpl::initialize() {
         uiService->tick();
     }, config.displayUpdateIntervalMs);
     
+    // Daily reset task for relay's own counters
+    scheduler.registerTask("daily_reset", [this](CommonAppState& state){
+        static uint32_t lastResetMs = 0;
+        if (state.nowMs - lastResetMs > 24 * 60 * 60 * 1000) {
+            lastResetMs = state.nowMs;
+            LOGI("Relay", "Performing daily reset of relay counters.");
+            _errorCount = 0;
+            persistenceHal->begin("app_state");
+            persistenceHal->saveU32("errorCount", _errorCount);
+            persistenceHal->end();
+        }
+    }, 60 * 60 * 1000); // Check once per hour
+
+
+    scheduler.registerTask("device_manager", [this](CommonAppState& state){
+        if (deviceManager) {
+            deviceManager->update(state.nowMs);
+        }
+    }, 5000); // Check for resets every 5 seconds
+
     scheduler.registerTask("lora", [this](CommonAppState& state){
         loraService->update(state.nowMs);
         // Radio.IrqProcess() moved to main run loop for higher frequency
@@ -200,23 +241,13 @@ void RelayApplicationImpl::initialize() {
             }
             if (mqttStatusText) {
                 bool connected = wifiService->isMqttConnected();
+                char statusText[40];
                 if (connected) {
-                    // Show connection status with queue info
-                    char statusText[32];
-                    uint16_t queueCount = wifiHal->getQueuedMessageCount();
-                    if (queueCount > 0) {
-                        snprintf(statusText, sizeof(statusText), "MQTT OK (%u)", queueCount);
-                    } else {
-                        strcpy(statusText, "MQTT OK");
-                    }
-                    mqttStatusText->setText(statusText);
+                    snprintf(statusText, sizeof(statusText), "MQTT OK\nErrors: %u", _errorCount);
                 } else {
-                    // Show connection state and retry info
-                    char statusText[32];
-                    uint32_t retryAttempts = wifiHal->getRetryAttempts();
-                    snprintf(statusText, sizeof(statusText), "MQTT X (%u)", retryAttempts);
-                    mqttStatusText->setText(statusText);
+                    snprintf(statusText, sizeof(statusText), "MQTT X\nErrors: %u", _errorCount);
                 }
+                mqttStatusText->setText(statusText);
             }
         }, config.communication.wifi.statusCheckIntervalMs);
     }
@@ -271,6 +302,13 @@ void RelayApplicationImpl::setupUi() {
 }
 
 void RelayApplicationImpl::onLoraDataReceived(uint8_t srcId, const uint8_t* payload, uint8_t length) {
+    // Pass telemetry to the device manager to handle state
+    if (deviceManager) {
+        // Convert payload to std::string for easier parsing
+        std::string payload_str(reinterpret_cast<const char*>(payload), length);
+        deviceManager->handleTelemetry(srcId, payload_str);
+    }
+    
     // Process received LoRa data and forward to MQTT if WiFi is available
     if (!config.communication.wifi.enableWifi) {
         LOGD("Relay", "WiFi disabled, cannot forward %u bytes from device %u to MQTT", length, srcId);
@@ -291,6 +329,10 @@ void RelayApplicationImpl::onLoraDataReceived(uint8_t srcId, const uint8_t* payl
             LOGW("Relay", "Failed to publish %u bytes from device %u to MQTT topic '%s'",
                  length, srcId, fullTopic);
             mqttStats.failed++;
+            _errorCount++;
+            persistenceHal->begin("app_state");
+            persistenceHal->saveU32("errorCount", _errorCount);
+            persistenceHal->end();
         } else {
             LOGI("Relay", "Successfully published %u bytes from device %u to MQTT topic '%s'",
                  length, srcId, fullTopic);

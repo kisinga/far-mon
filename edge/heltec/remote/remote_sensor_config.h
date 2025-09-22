@@ -11,6 +11,10 @@ struct RemoteSensorConfig {
 
     // --- Real Sensors ---
     struct {
+        bool enabled = true; // Always on, provides core device status
+    } batteryConfig;
+
+    struct {
         bool enabled = true; // Enabled by default as it's our focus
     } waterFlowConfig; 
 

@@ -153,6 +153,18 @@ class LoRaComm {
     (void)safeBegin(m, id);
   }
 
+  bool isReadyForTx() const {
+    // Ready if the radio isn't in TX state and we aren't waiting for an ACK.
+    // This prevents queueing new data while a blocking operation is in progress.
+    return radioState != State::Tx && awaitingAckMsgId == 0;
+  }
+
+  void resetCounters() {
+      nextMessageId = 1;
+      // We could also reset stats here if desired
+      LOGI("lora", "Counters reset.");
+  }
+
   // Expose selected APIs used by services/transports
   void setOnDataReceived(OnDataReceived cb) { onDataCb = cb; }
   void setOnAckReceived(OnAckReceived cb) { onAckCb = cb; }
@@ -168,6 +180,11 @@ class LoRaComm {
     if (length > maxAppPayload()) return false;
     // Reserve one slot for housekeeping (e.g., PING) to preserve presence
     if (outboxCount >= (uint8_t)(LORA_COMM_MAX_OUTBOX - 1)) return false;
+
+    // Check if the radio is busy before queueing.
+    if (!isReadyForTx()) {
+        return false;
+    }
 
     OutMsg &m = outbox[outboxCount++];
     m.inUse = true;
@@ -674,6 +691,9 @@ private:
           }
         }
         if (onAckCb != nullptr) onAckCb(src, msgId, attempts);
+        if (msgId == awaitingAckMsgId) {
+            awaitingAckMsgId = 0; // We are no longer waiting for an ACK.
+        }
         statsRxAck++;
         Logger::printf(Logger::Level::Debug, "lora", "RX ACK from=%u msgId=%u%s", src, msgId,
                        (mode == Mode::Slave) ? " (slave mode)" : " (master mode)");
@@ -806,6 +826,9 @@ private:
       if (!m.inUse) continue;
       if (m.requireAck && m.attempts >= LORA_COMM_MAX_RETRIES && (int32_t)(nowMs - m.nextAttemptMs) >= 0) {
         // drop (count, log once per drop at Warn)
+        if (m.msgId == awaitingAckMsgId) {
+            awaitingAckMsgId = 0; // Stop waiting, the message is being dropped.
+        }
         statsDropped++;
         Logger::printf(Logger::Level::Warn, "lora", "drop msgId=%u, attempts=%u, now=%u, nextAttempt=%u", 
                        m.msgId, m.attempts, nowMs, m.nextAttemptMs);

@@ -9,6 +9,7 @@
 #include <vector>
 #include "lib/hal_persistence.h" // Include the new persistence HAL
 #include "lib/svc_battery.h" // Include for IBatteryService
+#include <limits> // For NaN
 
 // ============================================================================
 // LoRa Batch Transmitter Implementation
@@ -17,41 +18,59 @@
 class LoRaBatchTransmitter : public SensorBatchTransmitter {
 public:
     LoRaBatchTransmitter(ILoRaHal* loraHal, uint8_t deviceId);
-    bool transmitBatch(const std::vector<SensorReading>& readings) override;
+    void addReading(const SensorReading& reading) override;
+    void update(uint32_t nowMs) override;
     bool isReady() const override;
 
 private:
     String formatReadings(const std::vector<SensorReading>& readings);
     ILoRaHal* _loraHal;
     uint8_t _deviceId;
+    std::vector<SensorReading> _readings;
 };
 
 LoRaBatchTransmitter::LoRaBatchTransmitter(ILoRaHal* loraHal, uint8_t deviceId)
     : _loraHal(loraHal), _deviceId(deviceId) {
 }
 
-bool LoRaBatchTransmitter::transmitBatch(const std::vector<SensorReading>& readings) {
-    if (!_loraHal || readings.empty()) {
-        LOGD("LoRaBatchTransmitter", "Cannot transmit: %s",
-             !_loraHal ? "LoRa HAL not available" : "no sensor readings");
-        return false;
+void LoRaBatchTransmitter::addReading(const SensorReading& reading) {
+    _readings.push_back(reading);
+}
+
+void LoRaBatchTransmitter::update(uint32_t nowMs) {
+    // If there's nothing to send, do nothing.
+    if (_readings.empty()) {
+        return;
     }
 
-    String payload = formatReadings(readings);
+    // Do not attempt to transmit if not connected to the master.
+    if (!_loraHal || !_loraHal->isConnected()) {
+        LOGD("LoRaBatchTransmitter", "Not connected, deferring transmission of %u readings.", _readings.size());
+        return;
+    }
+    
+    // Respect the HAL's busy state.
+    if (!_loraHal->isReadyForTx()) {
+        LOGD("LoRaBatchTransmitter", "LoRa HAL is busy, deferring transmission of %u readings.", _readings.size());
+        return;
+    }
+
+    String payload = formatReadings(_readings);
     LOGD("LoRaBatchTransmitter", "Formatted %u sensor readings into payload: '%s'",
-         (unsigned)readings.size(), payload.c_str());
+         (unsigned)_readings.size(), payload.c_str());
 
     if (payload.length() == 0) {
         LOGW("LoRaBatchTransmitter", "Failed to format sensor readings for transmission");
-        return false;
+        _readings.clear(); // Clear the buffer to prevent repeated failures
+        return;
     }
 
     // Create a telemetry message
     Messaging::Message message(
         Messaging::Message::Type::Telemetry,
-        _deviceId,  // source ID
-        1,          // destination ID (relay)
-        true,       // ACK required for telemetry
+        _deviceId,
+        1,
+        true,
         (const uint8_t*)payload.c_str(),
         (uint16_t)payload.length()
     );
@@ -61,18 +80,19 @@ bool LoRaBatchTransmitter::transmitBatch(const std::vector<SensorReading>& readi
          _deviceId, message.getMetadata().destinationId, message.getLength(),
          message.getMetadata().requiresAck ? "required" : "not required");
 
+    // Pass the RAW payload string to the HAL, not the wrapped message object.
     bool success = _loraHal->sendData(message.getMetadata().destinationId,
-                                     message.getPayload(),
-                                     message.getLength(),
+                                     (const uint8_t*)payload.c_str(),
+                                     (uint8_t)payload.length(),
                                      message.getMetadata().requiresAck);
 
     if (success) {
         LOGI("LoRaBatchTransmitter", "Successfully queued telemetry message for transmission");
+        _readings.clear(); // Clear the buffer ONLY on successful queueing
     } else {
         LOGW("LoRaBatchTransmitter", "Failed to queue telemetry message for transmission");
+        // Do not clear the buffer, we will retry on the next update.
     }
-
-    return success;
 }
 
 bool LoRaBatchTransmitter::isReady() const {
@@ -83,11 +103,12 @@ String LoRaBatchTransmitter::formatReadings(const std::vector<SensorReading>& re
     // This is a placeholder for a more robust serialization format like JSON or MessagePack
     String payload = "";
     for (size_t i = 0; i < readings.size(); ++i) {
-        payload += readings[i].type;
-        payload += ":";
         if (isnan(readings[i].value)) {
-            payload += "disabled";
+            payload += readings[i].type;
+            payload += ":disabled";
         } else {
+            payload += readings[i].type;
+            payload += ":";
             payload += String(readings[i].value, 2);
         }
         if (i < readings.size() - 1) {
@@ -103,7 +124,7 @@ String LoRaBatchTransmitter::formatReadings(const std::vector<SensorReading>& re
 
 class YFS201WaterFlowSensor : public ISensor {
 public:
-    YFS201WaterFlowSensor(uint8_t pin, IPersistenceHal* persistence, const char* persistence_namespace);
+    YFS201WaterFlowSensor(uint8_t pin, bool enabled, IPersistenceHal* persistence, const char* persistence_namespace);
     ~YFS201WaterFlowSensor();
 
     void begin() override;
@@ -121,9 +142,13 @@ public:
 
     // Public method for external task to save the total volume
     void saveTotalVolume();
+    
+    // Public method to reset the volume counter
+    void resetTotalVolume();
 
 private:
     const uint8_t _pin;
+    const bool _enabled;
     IPersistenceHal* _persistence;
     const char* _persistence_namespace;
     
@@ -146,17 +171,19 @@ private:
 volatile uint32_t YFS201WaterFlowSensor::_pulseCount = 0;
 volatile bool YFS201WaterFlowSensor::_interruptFired = false;
 
-YFS201WaterFlowSensor::YFS201WaterFlowSensor(uint8_t pin, IPersistenceHal* persistence, const char* persistence_namespace)
-    : _pin(pin), _persistence(persistence), _persistence_namespace(persistence_namespace) {
+YFS201WaterFlowSensor::YFS201WaterFlowSensor(uint8_t pin, bool enabled, IPersistenceHal* persistence, const char* persistence_namespace)
+    : _pin(pin), _enabled(enabled), _persistence(persistence), _persistence_namespace(persistence_namespace) {
 }
 
 YFS201WaterFlowSensor::~YFS201WaterFlowSensor() {
-    if (_pin != 0) {
+    if (_enabled && _pin != 0) {
         detachInterrupt(digitalPinToInterrupt(_pin));
     }
 }
 
 void YFS201WaterFlowSensor::begin() {
+    if (!_enabled) return;
+
     if (_persistence) {
         _persistence->begin(_persistence_namespace);
         _totalPulses = _persistence->loadU32("totalPulses");
@@ -175,6 +202,14 @@ void IRAM_ATTR YFS201WaterFlowSensor::pulseCounter() {
 }
 
 void YFS201WaterFlowSensor::read(std::vector<SensorReading>& readings) {
+    unsigned long currentTimeMs = millis();
+
+    if (!_enabled) {
+        readings.push_back({"flow_rate", std::numeric_limits<float>::quiet_NaN(), currentTimeMs});
+        readings.push_back({"total_vol", std::numeric_limits<float>::quiet_NaN(), currentTimeMs});
+        return;
+    }
+
     uint32_t currentPulses = 0;
     
     // Safely read and reset the pulse counter
@@ -183,19 +218,13 @@ void YFS201WaterFlowSensor::read(std::vector<SensorReading>& readings) {
     _pulseCount = 0;
     interrupts();
 
-    unsigned long currentTimeMs = millis();
     unsigned long elapsedTimeMs = currentTimeMs - _lastReadTimeMs;
     _lastReadTimeMs = currentTimeMs;
 
     // Calculate flow rate in Liters/Minute
     float flowRateLPM = 0.0f;
     if (elapsedTimeMs > 0) {
-        // Frequency (Hz) = pulses / (time in seconds)
         float frequency = (float)currentPulses / (elapsedTimeMs / 1000.0f);
-        // YF-S201 specific conversion from frequency to L/min (Q = F/7.5, but pulses/liter is more direct)
-        // We'll use our PULSES_PER_LITER constant for better accuracy.
-        // Flow rate (L/s) = frequency / PULSES_PER_LITER
-        // Flow rate (L/min) = (frequency * 60) / PULSES_PER_LITER
         flowRateLPM = (frequency * 60.0f) / PULSES_PER_LITER;
     }
 
@@ -209,7 +238,19 @@ void YFS201WaterFlowSensor::read(std::vector<SensorReading>& readings) {
     LOGD(getName(), "Pulses: %u, Rate: %.2f L/min, Total: %.2f L", currentPulses, flowRateLPM, totalVolumeLiters);
 }
 
+void YFS201WaterFlowSensor::resetTotalVolume() {
+    if (!_enabled) return;
+    
+    LOGI(getName(), "Resetting total volume. Old value (pulses): %u", _totalPulses);
+    _totalPulses = 0;
+    saveTotalVolume(); // Persist the reset immediately
+}
+
 void YFS201WaterFlowSensor::saveTotalVolume() {
+    if (!_enabled || !_persistence) {
+        return;
+    }
+    
     if (_persistence) {
         _persistence->begin(_persistence_namespace);
         bool success = _persistence->saveU32("totalPulses", _totalPulses);
@@ -228,15 +269,18 @@ void YFS201WaterFlowSensor::saveTotalVolume() {
 
 class BatteryMonitorSensor : public ISensor {
 public:
-    BatteryMonitorSensor(IBatteryService* batteryService) : _batteryService(batteryService) {}
+    BatteryMonitorSensor(IBatteryService* batteryService, bool enabled) 
+      : _batteryService(batteryService), _enabled(enabled) {}
 
     void begin() override {
         // Nothing to initialize, service is managed externally
     }
 
     void read(std::vector<SensorReading>& readings) override {
-        if (_batteryService) {
+        if (_enabled && _batteryService) {
             readings.push_back({"batt_pct", (float)_batteryService->getBatteryPercent(), millis()});
+        } else {
+            readings.push_back({"batt_pct", std::numeric_limits<float>::quiet_NaN(), millis()});
         }
     }
 
@@ -246,6 +290,7 @@ public:
 
 private:
     IBatteryService* _batteryService;
+    const bool _enabled;
 };
 
 // ============================================================================
@@ -253,12 +298,12 @@ private:
 // ============================================================================
 
 namespace SensorFactory {
-    std::shared_ptr<YFS201WaterFlowSensor> createYFS201WaterFlowSensor(uint8_t pin, IPersistenceHal* persistence, const char* persistence_namespace) {
-        return std::make_shared<YFS201WaterFlowSensor>(pin, persistence, persistence_namespace);
+    std::shared_ptr<YFS201WaterFlowSensor> createYFS201WaterFlowSensor(uint8_t pin, bool enabled, IPersistenceHal* persistence, const char* persistence_namespace) {
+        return std::make_shared<YFS201WaterFlowSensor>(pin, enabled, persistence, persistence_namespace);
     }
 
-    std::shared_ptr<ISensor> createBatteryMonitorSensor(IBatteryService* batteryService) {
-        return std::make_shared<BatteryMonitorSensor>(batteryService);
+    std::shared_ptr<ISensor> createBatteryMonitorSensor(IBatteryService* batteryService, bool enabled) {
+        return std::make_shared<BatteryMonitorSensor>(batteryService, enabled);
     }
 
     // In a real implementation, you would have factory functions here like:
