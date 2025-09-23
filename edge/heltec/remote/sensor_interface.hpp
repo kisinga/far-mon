@@ -27,15 +27,15 @@ public:
 class SensorBatchTransmitter {
 public:
     virtual ~SensorBatchTransmitter() = default;
-    virtual void addReading(const SensorReading& reading) = 0;
+    virtual bool queueBatch(const std::vector<SensorReading>& readings) = 0;
     virtual void update(uint32_t nowMs) = 0;
     virtual bool isReady() const = 0;
 };
 
-// Manages a collection of sensors and triggers batch transmissions.
+// Manages a collection of sensors
 class SensorManager {
 public:
-    SensorManager() : _transmitter(nullptr) {}
+    SensorManager() = default;
 
     void addSensor(std::shared_ptr<ISensor> sensor) {
         if (sensor) {
@@ -44,24 +44,15 @@ public:
         }
     }
 
-    void setTransmitter(SensorBatchTransmitter* transmitter) {
-        _transmitter = transmitter;
-    }
-
-    void update(uint32_t nowMs) {
-        // Read from all sensors and pass readings to the transmitter
-        if (!_transmitter) return;
-
+    // Reads from all managed sensors and returns a vector of their readings
+    std::vector<SensorReading> readAll() {
         std::vector<SensorReading> readings;
         for (const auto& sensor : _sensors) {
             sensor->read(readings);
         }
-        for (const auto& reading : readings) {
-            _transmitter->addReading(reading);
-        }
+        return readings;
     }
 
 private:
     std::vector<std::shared_ptr<ISensor>> _sensors;
-    SensorBatchTransmitter* _transmitter;
 };

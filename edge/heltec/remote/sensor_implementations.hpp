@@ -10,6 +10,12 @@
 #include "lib/hal_persistence.h" // Include the new persistence HAL
 #include "lib/svc_battery.h" // Include for IBatteryService
 #include <limits> // For NaN
+#include "ArduinoJson.h" 
+#include "lib/core_config.h" // For RemoteConfig
+#include "lib/telemetry_keys.h" // For consistent keys
+
+// Forward-declare the config struct to avoid circular dependency
+struct RemoteConfig;
 
 // ============================================================================
 // LoRa Batch Transmitter Implementation
@@ -17,30 +23,34 @@
 
 class LoRaBatchTransmitter : public SensorBatchTransmitter {
 public:
-    LoRaBatchTransmitter(ILoRaHal* loraHal, uint8_t deviceId);
-    void addReading(const SensorReading& reading) override;
+    LoRaBatchTransmitter(ILoRaHal* loraHal, const RemoteConfig& config);
+    bool queueBatch(const std::vector<SensorReading>& readings) override;
     void update(uint32_t nowMs) override;
     bool isReady() const override;
 
 private:
     String formatReadings(const std::vector<SensorReading>& readings);
     ILoRaHal* _loraHal;
-    uint8_t _deviceId;
+    const RemoteConfig& _config;
     std::vector<SensorReading> _readings;
+    uint32_t _lastTxTimeMs = 0;
 };
 
-LoRaBatchTransmitter::LoRaBatchTransmitter(ILoRaHal* loraHal, uint8_t deviceId)
-    : _loraHal(loraHal), _deviceId(deviceId) {
-}
+LoRaBatchTransmitter::LoRaBatchTransmitter(ILoRaHal* loraHal, const RemoteConfig& config)
+    : _loraHal(loraHal), _config(config) {}
 
-void LoRaBatchTransmitter::addReading(const SensorReading& reading) {
-    _readings.push_back(reading);
+bool LoRaBatchTransmitter::queueBatch(const std::vector<SensorReading>& readings) {
+    if (!_readings.empty()) {
+        LOGD("LoRaBatchTransmitter", "Buffer is not empty, refusing to queue new batch.");
+        return false; // Refuse to overwrite a batch that hasn't been sent
+    }
+    _readings = readings;
+    return true;
 }
 
 void LoRaBatchTransmitter::update(uint32_t nowMs) {
-    // If there's nothing to send, do nothing.
     if (_readings.empty()) {
-        return;
+        return; // Nothing to send
     }
 
     // Do not attempt to transmit if not connected to the master.
@@ -56,6 +66,7 @@ void LoRaBatchTransmitter::update(uint32_t nowMs) {
     }
 
     String payload = formatReadings(_readings);
+
     LOGD("LoRaBatchTransmitter", "Formatted %u sensor readings into payload: '%s'",
          (unsigned)_readings.size(), payload.c_str());
 
@@ -64,27 +75,19 @@ void LoRaBatchTransmitter::update(uint32_t nowMs) {
         _readings.clear(); // Clear the buffer to prevent repeated failures
         return;
     }
+    
+    // The underlying LoRaComm library has a max payload size. We must respect it.
+    if (payload.length() > LORA_COMM_MAX_PAYLOAD) {
+        LOGW("LoRaBatchTransmitter", "Payload of %d bytes exceeds max of %d. Dropping batch.", payload.length(), LORA_COMM_MAX_PAYLOAD);
+        _readings.clear();
+        return;
+    }
 
-    // Create a telemetry message
-    Messaging::Message message(
-        Messaging::Message::Type::Telemetry,
-        _deviceId,
-        1,
-        true,
-        (const uint8_t*)payload.c_str(),
-        (uint16_t)payload.length()
-    );
-
-    // Send as LoRa message using the proper message format
-    LOGD("LoRaBatchTransmitter", "Sending telemetry: device=%u, dest=%u, len=%u, ack=%s",
-         _deviceId, message.getMetadata().destinationId, message.getLength(),
-         message.getMetadata().requiresAck ? "required" : "not required");
-
-    // Pass the RAW payload string to the HAL, not the wrapped message object.
-    bool success = _loraHal->sendData(message.getMetadata().destinationId,
+    // Pass the RAW payload string to the HAL
+    bool success = _loraHal->sendData(_config.masterNodeId,
                                      (const uint8_t*)payload.c_str(),
                                      (uint8_t)payload.length(),
-                                     message.getMetadata().requiresAck);
+                                     true); // require ACK
 
     if (success) {
         LOGI("LoRaBatchTransmitter", "Successfully queued telemetry message for transmission");
@@ -100,19 +103,23 @@ bool LoRaBatchTransmitter::isReady() const {
 }
 
 String LoRaBatchTransmitter::formatReadings(const std::vector<SensorReading>& readings) {
-    // This is a placeholder for a more robust serialization format like JSON or MessagePack
     String payload = "";
     for (size_t i = 0; i < readings.size(); ++i) {
+        if (i > 0) payload += ",";
+        payload += readings[i].type;
+        payload += ":";
         if (isnan(readings[i].value)) {
-            payload += readings[i].type;
-            payload += ":disabled";
+            payload += "nan";
         } else {
-            payload += readings[i].type;
-            payload += ":";
-            payload += String(readings[i].value, 2);
-        }
-        if (i < readings.size() - 1) {
-            payload += ",";
+            // Use integer for counters, float for others
+            if (strcmp(readings[i].type, TelemetryKeys::PulseDelta) == 0 ||
+                strcmp(readings[i].type, TelemetryKeys::BatteryPercent) == 0 ||
+                strcmp(readings[i].type, TelemetryKeys::ErrorCount) == 0 ||
+                strcmp(readings[i].type, TelemetryKeys::TimeSinceReset) == 0) {
+                payload += String((int)readings[i].value);
+            } else {
+                payload += String(readings[i].value, 2);
+            }
         }
     }
     return payload;
@@ -164,7 +171,7 @@ private:
     uint32_t _totalPulses = 0;
 
     // YF-S201 constant: pulses per liter (can be calibrated)
-    const float PULSES_PER_LITER = 450.0f;
+    static constexpr float PULSES_PER_LITER = 450.0f;
 };
 
 // Define static members
@@ -205,37 +212,28 @@ void YFS201WaterFlowSensor::read(std::vector<SensorReading>& readings) {
     unsigned long currentTimeMs = millis();
 
     if (!_enabled) {
-        readings.push_back({"flow_rate", std::numeric_limits<float>::quiet_NaN(), currentTimeMs});
-        readings.push_back({"total_vol", std::numeric_limits<float>::quiet_NaN(), currentTimeMs});
+        readings.push_back({TelemetryKeys::PulseDelta, std::numeric_limits<float>::quiet_NaN(), currentTimeMs});
+        readings.push_back({TelemetryKeys::TotalVolume, std::numeric_limits<float>::quiet_NaN(), currentTimeMs});
         return;
     }
 
-    uint32_t currentPulses = 0;
-    
-    // Safely read and reset the pulse counter
+    // Atomically get and reset the pulse count
     noInterrupts();
-    currentPulses = _pulseCount;
+    unsigned long currentPulses = _pulseCount;
     _pulseCount = 0;
     interrupts();
 
-    unsigned long elapsedTimeMs = currentTimeMs - _lastReadTimeMs;
     _lastReadTimeMs = currentTimeMs;
 
-    // Calculate flow rate in Liters/Minute
-    float flowRateLPM = 0.0f;
-    if (elapsedTimeMs > 0) {
-        float frequency = (float)currentPulses / (elapsedTimeMs / 1000.0f);
-        flowRateLPM = (frequency * 60.0f) / PULSES_PER_LITER;
-    }
+    // Report the raw pulse delta. The relay will calculate rate.
+    readings.push_back({TelemetryKeys::PulseDelta, (float)currentPulses, currentTimeMs});
 
-    // Update total volume
+    // We still report total volume for the remote's display and persistence.
     _totalPulses += currentPulses;
-    float totalVolumeLiters = (float)_totalPulses / PULSES_PER_LITER;
-
-    readings.push_back({"flow_rate", flowRateLPM, currentTimeMs});
-    readings.push_back({"total_vol", totalVolumeLiters, currentTimeMs});
+    float totalVolumeLiters = (float)_totalPulses / YFS201WaterFlowSensor::PULSES_PER_LITER;
+    readings.push_back({TelemetryKeys::TotalVolume, totalVolumeLiters, currentTimeMs});
     
-    LOGD(getName(), "Pulses: %u, Rate: %.2f L/min, Total: %.2f L", currentPulses, flowRateLPM, totalVolumeLiters);
+    LOGD(getName(), "Read %u pulses", currentPulses);
 }
 
 void YFS201WaterFlowSensor::resetTotalVolume() {
@@ -278,9 +276,9 @@ public:
 
     void read(std::vector<SensorReading>& readings) override {
         if (_enabled && _batteryService) {
-            readings.push_back({"batt_pct", (float)_batteryService->getBatteryPercent(), millis()});
+            readings.push_back({TelemetryKeys::BatteryPercent, (float)_batteryService->getBatteryPercent(), millis()});
         } else {
-            readings.push_back({"batt_pct", std::numeric_limits<float>::quiet_NaN(), millis()});
+            readings.push_back({TelemetryKeys::BatteryPercent, std::numeric_limits<float>::quiet_NaN(), millis()});
         }
     }
 

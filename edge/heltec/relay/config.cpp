@@ -4,6 +4,7 @@
 
 RelayConfig buildRelayConfig() {
     RelayConfig cfg = RelayConfig::create(RELAY_DEVICE_ID);
+    cfg.deviceName = "relay-01";
     
     // Override per-device values here (single source of truth for relay)
     cfg.communication.wifi.enableWifi = true;
@@ -14,7 +15,7 @@ RelayConfig buildRelayConfig() {
     cfg.communication.wifi.statusCheckIntervalMs = 5000;
 
     cfg.communication.mqtt.enableMqtt = true;
-    cfg.communication.mqtt.brokerHost = "broker.mqtt.cool";
+    cfg.communication.mqtt.brokerHost = "192.168.100.95";
     cfg.communication.mqtt.brokerPort = 1883;
     cfg.communication.mqtt.baseTopic = "farm/tester";
     cfg.communication.mqtt.clientId = "relay-1"; // MQTT client ID should be a string

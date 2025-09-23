@@ -17,6 +17,7 @@ enum class DeviceType : uint8_t {
 // Common device configuration
 struct DeviceConfig {
     uint8_t deviceId;
+    const char* deviceName = "far-mon";
     DeviceType deviceType;
     uint32_t heartbeatIntervalMs;
     bool enableDisplay;

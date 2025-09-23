@@ -5,6 +5,7 @@
 #include "lib/common_message_types.h"
 #include <vector>
 #include <map>
+#include "lib/telemetry_keys.h"
 
 // Represents the state of a single remote device
 struct RemoteDeviceState {
@@ -13,6 +14,8 @@ struct RemoteDeviceState {
     float dailyVolumeLiters = 0.0f;
     uint32_t errorCount = 0;
     uint32_t timeSinceResetSec = 0; // Time since the remote's last reset
+    unsigned long lastMessageMs = 0;
+    uint32_t lastTsrSec = 0;
     bool needsSave = false;
 };
 
@@ -69,48 +72,46 @@ void RemoteDeviceManager::update(uint32_t nowMs) {
 }
 
 void RemoteDeviceManager::handleTelemetry(uint8_t srcId, const std::string& payload) {
+    unsigned long nowMs = millis();
     RemoteDeviceState* device = getOrCreateDevice(srcId);
     if (!device) return;
 
-    // Parse the simple "key:value,key:value" string.
+    device->lastMessageMs = nowMs;
+
     size_t start = 0;
     while (start < payload.length()) {
         size_t end = payload.find(',', start);
-        if (end == std::string::npos) {
-            end = payload.length();
-        }
+        if (end == std::string::npos) end = payload.length();
+        
         std::string pair_str = payload.substr(start, end - start);
         size_t colon_pos = pair_str.find(':');
+
         if (colon_pos != std::string::npos) {
             std::string key = pair_str.substr(0, colon_pos);
             std::string value_str = pair_str.substr(colon_pos + 1);
-            
-            if (key == "total_vol") {
-                if (value_str != "disabled") {
-                    float value = std::stof(value_str);
-                    if (value < device->dailyVolumeLiters) {
-                        LOGI("DeviceManager", "Device %u total volume has decreased. Assuming it was reset.", srcId);
-                        device->dailyVolumeLiters = value;
-                    } else {
-                        device->dailyVolumeLiters = value;
+
+            if (key == TelemetryKeys::TotalVolume) {
+                if (value_str != "nan") device->dailyVolumeLiters = std::stof(value_str);
+            } else if (key == TelemetryKeys::ErrorCount) {
+                if (value_str != "nan") device->errorCount = std::stoul(value_str);
+            } else if (key == TelemetryKeys::TimeSinceReset) {
+                if (value_str != "nan") device->timeSinceResetSec = std::stoul(value_str);
+            } else if (key == TelemetryKeys::PulseDelta) {
+                if (value_str != "nan" && device->lastTsrSec > 0) {
+                    uint32_t time_delta_sec = device->timeSinceResetSec - device->lastTsrSec;
+                    uint16_t pulse_delta = std::stoul(value_str);
+                    if (time_delta_sec > 0) {
+                        float frequency = (float)pulse_delta / time_delta_sec;
+                        float flow_rate_lpm = (frequency * 60.0f) / 450.0f; // Using hardcoded const for now
+                        LOGD("DeviceManager", "Device %u flow rate: %.2f L/min (from %u pulses over %u s)", srcId, flow_rate_lpm, pulse_delta, time_delta_sec);
                     }
-                    device->needsSave = true;
-                    LOGD("DeviceManager", "Device %u daily total: %.2f L", srcId, device->dailyVolumeLiters);
-                }
-            } else if (key == "err_count") {
-                if (value_str != "disabled") {
-                    device->errorCount = (uint32_t)std::stof(value_str);
-                    LOGD("DeviceManager", "Device %u error count: %u", srcId, device->errorCount);
-                }
-            } else if (key == "tsr") {
-                if (value_str != "disabled") {
-                    device->timeSinceResetSec = (uint32_t)std::stof(value_str);
-                    LOGD("DeviceManager", "Device %u time since reset: %u s", srcId, device->timeSinceResetSec);
                 }
             }
         }
         start = end + 1;
     }
+    device->lastTsrSec = device->timeSinceResetSec;
+    device->needsSave = true; // Mark for save on next update cycle
 }
 
 RemoteDeviceState* RemoteDeviceManager::getOrCreateDevice(uint8_t deviceId) {
@@ -124,6 +125,7 @@ RemoteDeviceState* RemoteDeviceManager::getOrCreateDevice(uint8_t deviceId) {
     RemoteDeviceState newState;
     newState.deviceId = deviceId;
     newState.lastResetMs = millis(); // Start the timer now
+    newState.lastMessageMs = millis();
     newState.needsSave = true;
     _devices[deviceId] = newState;
     return &_devices[deviceId];
@@ -155,6 +157,8 @@ void RemoteDeviceManager::loadAllStates() {
         state.lastResetMs = _persistence->loadU32("lastReset", millis());
         state.dailyVolumeLiters = _persistence->loadFloat("dailyVol");
         state.errorCount = _persistence->loadU32("errorCount", 0);
+        state.lastMessageMs = millis();
+        state.lastTsrSec = _persistence->loadU32("lastTsr", 0);
         _persistence->end();
         _devices[id] = state;
         LOGI("DeviceManager", "Loaded state for device %u", id);
@@ -168,6 +172,7 @@ void RemoteDeviceManager::saveState(RemoteDeviceState& state) {
     _persistence->saveU32("lastReset", state.lastResetMs);
     _persistence->saveFloat("dailyVol", state.dailyVolumeLiters);
     _persistence->saveU32("errorCount", state.errorCount);
+    _persistence->saveU32("lastTsr", state.lastTsrSec);
     _persistence->end();
 
     // Also update the master list of devices

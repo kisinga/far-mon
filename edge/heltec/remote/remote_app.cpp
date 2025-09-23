@@ -182,7 +182,15 @@ void RemoteApplicationImpl::initialize() {
     // Perform an initial sensor read and telemetry transmission
     if (sensorConfig.enableSensorSystem) {
         LOGI("Remote", "Performing initial sensor reading and telemetry transmission...");
-        sensorManager.update(millis());
+        auto readings = sensorManager.readAll();
+        readings.push_back({TelemetryKeys::ErrorCount, (float)_errorCount, millis()});
+        uint32_t timeSinceResetSec = (millis() - _lastResetMs) / 1000;
+        readings.push_back({TelemetryKeys::TimeSinceReset, (float)timeSinceResetSec, millis()});
+        if (sensorTransmitter) {
+            sensorTransmitter->queueBatch(readings);
+            // We can also trigger an immediate update attempt, which will be handled
+            // by the lora_tx task shortly anyway.
+        }
     }
 
     LOGI("Remote", "Registering scheduler tasks");
@@ -229,14 +237,17 @@ void RemoteApplicationImpl::initialize() {
     if (sensorConfig.enableSensorSystem) {
         // This task reads sensors and fills the transmitter's buffer
         scheduler.registerTask("sensors", [this](CommonAppState& state){
-              sensorManager.update(state.nowMs);
-              if (sensorTransmitter) {
-                  // Manually add application-level data to the batch
-                  sensorTransmitter->addReading({"err_count", (float)_errorCount, state.nowMs});
-                  uint32_t timeSinceResetSec = (state.nowMs - _lastResetMs) / 1000;
-                  sensorTransmitter->addReading({"tsr", (float)timeSinceResetSec, state.nowMs});
-              }
-        }, config.telemetryReportIntervalMs);
+            auto readings = sensorManager.readAll();
+            
+            // Manually add application-level data to the batch
+            readings.push_back({TelemetryKeys::ErrorCount, (float)_errorCount, state.nowMs});
+            uint32_t timeSinceResetSec = (state.nowMs - _lastResetMs) / 1000;
+            readings.push_back({TelemetryKeys::TimeSinceReset, (float)timeSinceResetSec, state.nowMs});
+
+            if (sensorTransmitter) {
+                sensorTransmitter->queueBatch(readings);
+            }
+        }, config.globalDebugMode ? config.debugTelemetryReportIntervalMs : config.telemetryReportIntervalMs);
 
         // This task attempts to transmit the buffer
         scheduler.registerTask("lora_tx", [this](CommonAppState& state){
@@ -305,8 +316,8 @@ void RemoteApplicationImpl::setupSensors() {
         return;
     }
 
-    auto transmitter = std::make_unique<LoRaBatchTransmitter>(loraHal.get(), config.deviceId);
-    sensorManager.setTransmitter(transmitter.get());
+    auto transmitter = std::make_unique<LoRaBatchTransmitter>(loraHal.get(), config);
+    // The transmitter is now managed by the RemoteApplicationImpl, not the SensorManager
     sensorTransmitter = std::move(transmitter);
 
     // --- Sensor Creation ---

@@ -8,6 +8,7 @@
 // Per-device configuration for Remote
 inline RemoteConfig buildRemoteConfig() {
     RemoteConfig cfg = RemoteConfig::create(3); // Example ID 3
+    cfg.deviceName = "remote-03";
     // Remotes usually operate over LoRa only; WiFi off by default
     cfg.communication.wifi.enableWifi = false;
     cfg.globalDebugMode = true; // Enable debug mode for testing
