@@ -1,68 +1,50 @@
-## LoRaWAN Migration: Architectural Guide
+# LoRaWAN Migration: Architectural Vision & Strategy
 
-### 1. Executive Summary
+## 1. Motivation
 
-Our current custom LoRa protocol has proven to be unreliable, creating significant operational challenges. This document outlines the architectural strategy for migrating our farm monitoring system to the industry-standard LoRaWAN protocol. This migration will enhance system reliability, enable remote device management, and position the platform for future expansion with standard off-the-shelf LoRaWAN devices.
+Our existing custom LoRa protocol is facing significant reliability challenges, which impacts data integrity and operational stability. To address this, we are migrating to the LoRaWAN standard. This will provide a robust, industry-proven foundation, improving reliability and unlocking advanced capabilities for remote management and future scalability.
 
-The migration is designed to be executed in phases to ensure zero downtime and allow for incremental testing and deployment.
+## 2. Target Architecture: The Long-Term Vision
 
-### 2. Chosen Technology Stack
+The end-state architecture will be a fully compliant LoRaWAN network, composed of three core components:
 
-The new architecture will be built on a robust, open-source stack:
+- **LoRaWAN End Devices**: Our remote sensor nodes will operate as standard LoRaWAN devices. This ensures interoperability and allows for the future addition of off-the-shelf LoRaWAN sensors.
+- **LoRaWAN Gateway**: A professional-grade gateway (e.g., a Raspberry Pi with a LoRaWAN HAT) will be deployed to receive data from all end devices within its range.
+- **Network & Application Server**: A LoRaWAN Network Server, such as ChirpStack, will manage the network. It will handle device authentication, message decryption, Adaptive Data Rate (ADR), and forwarding data to our application backend via MQTT.
 
-- **LoRaWAN Network Server**: **ChirpStack** will be used to manage the LoRaWAN network, including device authentication, data routing, and adaptive data rates.
-- **Message Broker**: **Mosquitto (MQTT)** will continue to serve as the messaging backbone, decoupling the network server from our data processing applications.
-- **Automation & Processing**: **Node-RED** will be used for processing and visualizing the telemetry data received via MQTT.
+This architecture decouples the physical layer (LoRa) from the application layer, creating a scalable and maintainable system.
 
-This stack was chosen for its native LoRaWAN support, excellent MQTT integration, open-source licensing, and flexibility.
+## 3. Transitional Strategy: A Phased Approach
 
-### 3. Phased Migration Strategy
+To de-risk the migration and enable parallel development, we will adopt a two-phase transitional strategy. The core principle is to make the `remote` node LoRaWAN-compliant first, even before the new gateway hardware is deployed.
 
-The migration is broken into two main phases to de-risk the transition and separate firmware development from hardware deployment.
+### Phase 1: Firmware-First Migration
 
-#### Phase 1: Remote-First Migration (Pre-Hardware Arrival)
+This phase focuses on software and firmware changes, using existing hardware.
 
-This phase focuses on upgrading the remote sensor nodes to be LoRaWAN-compliant while the existing relay hardware is still in place. This allows for firmware development and testing to proceed in parallel with hardware procurement.
+- **Remote Node Refactoring**:
 
-**Architectural Goals:**
+  - The `remote` node's firmware will be re-architected to use a standard LoRaWAN stack (Class A). It will communicate as if it were talking to a real LoRaWAN gateway.
+  - An AT command interface will be implemented, allowing for remote configuration and control via LoRaWAN downlinks. This is crucial for maintainability.
 
-1.  **Firmware Upgrade**: The firmware on the remote Heltec devices will be refactored to replace the custom LoRa implementation with a standard LoRaWAN stack (Class A).
-2.  **Remote Management**: Implement support for AT-style commands received via LoRaWAN downlinks. This is critical for remote debugging, configuration changes (e.g., sensor poll interval), and maintenance without requiring physical access.
-3.  **Temporary Gateway Emulation**: The existing Relay node's firmware will be modified to function as a minimal, temporary packet forwarder. It will not be a compliant LoRaWAN gateway. Its sole responsibility is to capture LoRaWAN packets from the remote nodes and forward the raw payloads to the Bridge via serial. This is a **throwaway component** designed to bridge the gap until the new hardware arrives.
-4.  **Bridge Adaptation**: The Bridge script will be updated to parse the incoming serial data from the Relay and forward the extracted sensor payloads to MQTT.
+- **Relay Node as a Temporary "Packet Forwarder"**:
+  - The `relay` node will be modified to act as a minimal, non-compliant LoRaWAN packet forwarder.
+  - Its sole responsibility is to receive the raw LoRaWAN packets from the `remote` node, extract the application payload, and forward it upstream via its existing serial connection.
+  - **Crucially, this component is temporary and designed to be discarded.** It allows the `remote` node to be developed and tested against a LoRaWAN-like target without waiting for the gateway hardware. This makes the final gateway a "drop-in" replacement from the remote's perspective.
 
-At the end of this phase, all remote devices will be speaking LoRaWAN, but the backend infrastructure will still be using the legacy relay hardware as a temporary bridge.
+### Phase 2: Gateway Deployment
 
-#### Phase 2: Full LoRaWAN Gateway Deployment (Hardware Arrival)
+This phase completes the migration by deploying the new hardware.
 
-This phase replaces the temporary relay solution with a production-grade LoRaWAN gateway.
+- **Gateway Installation**: The LoRaWAN Gateway hardware will be installed and configured with the Network Server (e.g., ChirpStack).
+- **Relay Decommissioning**: The temporary `relay` node will be decommissioned and removed.
+- **Data Path Re-Routing**: The backend services will be updated to consume data directly from the Network Server's MQTT feed, which will provide decrypted and structured data.
 
-**Architectural Goals:**
+## 4. Architectural Benefits & Outcomes
 
-1.  **Hardware Deployment**: A Raspberry Pi equipped with a generic LoRaWAN gateway HAT (e.g., SX1302-based) will be deployed. This hardware will be managed by ChirpStack.
-2.  **ChirpStack Deployment**: The full ChirpStack stack (Network Server, Gateway Bridge) will be deployed on the Raspberry Pi using Docker containers.
-3.  **Relay Decommissioning**: The Heltec Relay device will be physically removed from the system.
-4.  **Data Path Re-routing**: The Bridge component will be reconfigured. Instead of listening for serial data, it will now subscribe directly to the MQTT topics published by the ChirpStack server. ChirpStack will handle the decoding of LoRaWAN packets and publish decrypted sensor data in a structured format (e.g., JSON).
+This migration will yield significant benefits:
 
-Upon completion of this phase, the system will be operating on a standard, fully compliant LoRaWAN architecture.
-
-### 4. Architectural Benefits
-
-This phased approach provides several key advantages:
-
-- **Zero Downtime**: The existing system remains operational throughout the migration process.
-- **Incremental Rollout**: Changes can be developed and tested in isolated stages (firmware first, then hardware).
-- **Hardware Agnostic**: The architecture is not tied to a specific LoRaWAN HAT. Any ChirpStack-compatible gateway hardware can be used.
-- **Enhanced Reliability**: Eliminates the maintenance burden and flakiness of a custom protocol.
-- **Advanced Capabilities**: Unlocks professional features like Adaptive Data Rate (ADR), secure communication, and remote device management.
-
-### 5. Hardware Compatibility
-
-The architecture is designed to work with any Raspberry Pi HAT that is supported by the ChirpStack Gateway Bridge. This includes a wide variety of common modules based on Semtech chipsets.
-
-**Examples of Supported HATs:**
-
-- Waveshare SX1302/SX1303 Series
-- Pi Supply LoRa Gateway HAT
-- RAKwireless Gateway HATs (RAK831, RAK2245, etc.)
-- Dragino LoRa Gateway HATs
+- **Enhanced Reliability**: Moves from a brittle custom protocol to a robust, self-healing, and professionally maintained standard.
+- **Remote Management**: Enables remote device configuration and debugging via the AT command interface and LoRaWAN downlinks.
+- **Scalability & Interoperability**: The system will be able to support a larger number of devices and seamlessly integrate third-party LoRaWAN-compliant sensors.
+- **Reduced Maintenance**: Offloads the complexity of managing a wireless protocol to a dedicated Network Server.
