@@ -19,7 +19,7 @@ fi
 
 ACTION=$1
 SKETCH_NAME=$2
-FQBN="Heltec-esp32:esp32:heltec_wifi_lora_32_V2"
+FQBN="Heltec-esp32:esp32:heltec_wifi_lora_32_V3"
 SKETCH_DIR="${SKETCH_NAME}"
 
 if [ ! -d "$SKETCH_DIR" ]; then
