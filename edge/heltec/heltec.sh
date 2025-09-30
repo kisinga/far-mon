@@ -5,19 +5,40 @@ set -euo pipefail
 # Run this from within the edge/heltec directory.
 #
 # Usage:
-#   ./heltec.sh build <sketch_name>
-#   ./heltec.sh upload <sketch_name> [port]
-#   ./heltec.sh build-upload <sketch_name> [port]
+#   ./heltec.sh [-v|--verbose] build <sketch_name>
+#   ./heltec.sh [-v|--verbose] upload <sketch_name> [port]
+#   ./heltec.sh [-v|--verbose] build-upload <sketch_name> [port]
 #
 # Examples:
 #   ./heltec.sh build relay
-#   ./heltec.sh upload remote                    # Auto-detect port
-#   ./heltec.sh upload remote /dev/ttyUSB0      # Manual port
-#   ./heltec.sh build-upload relay              # Auto-detect port
-#   ./heltec.sh build-upload relay /dev/ttyUSB0 # Manual port
+#   ./heltec.sh -v upload remote                    # Auto-detect port (verbose)
+#   ./heltec.sh --verbose upload remote /dev/ttyUSB0 # Manual port (verbose)
+#   ./heltec.sh build-upload relay                  # Auto-detect port
+#   ./heltec.sh -v build-upload relay /dev/ttyUSB0  # Manual port (verbose)
 
-if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
-  echo "Usage: $0 {build|upload|build-upload} <sketch_name> [port]"
+VERBOSE=false
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -v|--verbose)
+      VERBOSE=true
+      shift
+      ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      echo "Usage: $0 [-v|--verbose] {build|upload|build-upload} <sketch_name> [port]"
+      exit 1
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+# Check minimum arguments after parsing options
+if [ $# -lt 2 ] || [ $# -gt 3 ]; then
+  echo "Usage: $0 [-v|--verbose] {build|upload|build-upload} <sketch_name> [port]"
   exit 1
 fi
 
@@ -33,7 +54,10 @@ if [ ! -d "$SKETCH_DIR" ]; then
 fi
 
 # Ensure the lib symlink exists
-./arduino-include.sh apply
+if [ "$VERBOSE" = true ]; then
+  echo "Setting up lib symlinks..."
+fi
+./arduino-include.sh apply $([ "$VERBOSE" = true ] && echo "--verbose")
 
 # Function to get port - uses provided port or auto-detects
 get_port() {
@@ -50,12 +74,19 @@ get_port() {
 
 case "$ACTION" in
   build)
-    echo "Building sketch '$SKETCH_NAME' for board '$FQBN'..."
+    if [ "$VERBOSE" = true ]; then
+      echo "Building sketch '$SKETCH_NAME' for board '$FQBN'..."
+      echo "Sketch directory: $SKETCH_DIR"
+      echo "Board FQBN: $FQBN"
+    fi
     arduino-cli compile --fqbn "$FQBN" "$SKETCH_DIR"
     echo "Build complete."
     ;;
   upload)
     # Get the serial port (manual or auto-detected)
+    if [ "$VERBOSE" = true ]; then
+      echo "Detecting serial port..."
+    fi
     PORT=$(get_port)
 
     if [ -z "$PORT" ]; then
@@ -63,16 +94,25 @@ case "$ACTION" in
         exit 1
     fi
 
-    echo "Found board on port: $PORT"
-    echo "Building and uploading sketch '$SKETCH_NAME' for board '$FQBN'..."
+    if [ "$VERBOSE" = true ]; then
+      echo "Found board on port: $PORT"
+      echo "Uploading sketch '$SKETCH_NAME' to board '$FQBN' on port $PORT..."
+    fi
     arduino-cli upload -p "$PORT" --fqbn "$FQBN" "$SKETCH_DIR"
     echo "Upload complete."
     ;;
   build-upload)
-    echo "Building sketch '$SKETCH_NAME' for board '$FQBN'..."
+    if [ "$VERBOSE" = true ]; then
+      echo "Building sketch '$SKETCH_NAME' for board '$FQBN'..."
+      echo "Sketch directory: $SKETCH_DIR"
+      echo "Board FQBN: $FQBN"
+    fi
     arduino-cli compile --fqbn "$FQBN" "$SKETCH_DIR"
 
     # Get the serial port (manual or auto-detected)
+    if [ "$VERBOSE" = true ]; then
+      echo "Detecting serial port for upload..."
+    fi
     PORT=$(get_port)
 
     if [ -z "$PORT" ]; then
@@ -80,8 +120,10 @@ case "$ACTION" in
         exit 1
     fi
 
-    echo "Found board on port: $PORT"
-    echo "Uploading sketch '$SKETCH_NAME' to board '$FQBN'..."
+    if [ "$VERBOSE" = true ]; then
+      echo "Found board on port: $PORT"
+      echo "Uploading sketch '$SKETCH_NAME' to board '$FQBN' on port $PORT..."
+    fi
     arduino-cli upload -p "$PORT" --fqbn "$FQBN" "$SKETCH_DIR"
     echo "Build and upload complete."
     ;;
