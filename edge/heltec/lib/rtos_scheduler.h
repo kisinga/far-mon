@@ -4,8 +4,8 @@
 #include <functional>
 #include <string>
 #include <vector>
-#include <FreeRTOS.h>
-#include <timers.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/timers.h>
 
 template<typename TState>
 using RtosTaskCallback = std::function<void(TState&)>;
